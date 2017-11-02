@@ -11,7 +11,7 @@ from tensorflow.python.framework import ops
 
 import numpy as np
 import tensorflow as tf
-
+from deepexplain.tensorflow import DeepExplain
 
 tf.set_random_seed(10)
 
@@ -70,6 +70,7 @@ train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(cross_ent
 correct_prediction = tf.equal(tf.argmax(prediction, 1), tf.argmax(Y, 1))
 accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
+
 sess = tf.InteractiveSession()
 tf.global_variables_initializer().run()
 
@@ -93,65 +94,6 @@ Exmplain network prediction
 
 
 
-@ops.RegisterGradient("MyGradientDEEPLIFT")
-def MyGradientDEEPLIFT(op, grad):
-    input = op.inputs[0]
-    return tf.zeros_like(input)
-
-@ops.RegisterGradient("MyGradientGRAD")
-def MyGradientGRAD(op, grad):
-    input = op.inputs[0]
-    return tf.ones_like(input)
-
-from contextlib import contextmanager
-
-class DeepExplain(object):
-
-    # @staticmethod
-    # @contextmanager
-    # def use(self, method):
-    #     with self.graph.as_default():
-    #         with self.graph.gradient_override_map({'Relu': 'MyStopGradient'}):
-    #             print('Override')
-    #             yield
-    #             return self
-
-    def __init__(self, method, graph=tf.get_default_graph(), sess=tf.Session()):
-        self.method = method
-        self.graph = graph
-        self.session = sess
-        self.graph_context = self.graph.as_default()
-        self.override_context = self.graph.gradient_override_map(self.get_override_map())
-
-    def get_override_map(self):
-        if self.method == '' or self.method == None:
-            return {}
-        else:
-            return {'Relu': 'MyGradient'+self.method.upper()}
-
-    def __enter__(self):
-        #Override gradient of all ops created here
-        self.graph_context.__enter__()
-        self.override_context.__enter__()
-        print ('Override')
-        return self
-
-    def __exit__(self, type, value, traceback):
-        self.graph_context.__exit__(type, value, traceback)
-        self.override_context.__exit__(type, value, traceback)
-
-    def explain(self, T, X, xs):
-        compute_grad = tf.gradients(T, X)[0]
-        explanation = sess.run(compute_grad, {X: xs})
-        print ('Oh, its ' + self.method)
-        return explanation
-
-
-
-
-
-
-
 g = tf.get_default_graph()
 for op in g.get_operations():
     # print (op, op.inputs)
@@ -164,13 +106,19 @@ print ('==== Gradient override ===')
 xi = mnist.test.images[0]
 yi = mnist.test.labels[0]
 
+grad = tf.gradients(logits*yi, X)[0]
+grads = sess.run(grad, {X: [xi]})
+print('This IS the original grad: %f' % np.sum(grads))
 
 
-with DeepExplain('deeplift') as explanator:
-    print (explanator)
+
+with DeepExplain(sess=sess) as de:
     logits2 = neural_net(X)
-    explanation = explanator.explain(logits2*yi, X, [xi])
-    print(np.sum(explanation))
+    explanation = de.explain('grad*input', logits2*yi, X, [xi])
+    print('This is the modified gradient: %f' % np.sum(explanation))
+    grad = tf.gradients(logits2*yi, X)[0]
+    grads = sess.run(grad, {X: [xi]})
+    print('This should be original grad: %f' % np.sum(grads))
 
 
 for op in g.get_operations():

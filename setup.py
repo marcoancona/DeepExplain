@@ -12,4 +12,7 @@ setup(name='deepexplain',
           'numpy>=1.12.1',
           'termcolor'
       ],
-      zip_safe=False)
+      zip_safe=False,
+      test_suite='nose.collector',
+      tests_require=['nose'],
+      )
