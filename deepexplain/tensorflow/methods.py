@@ -38,7 +38,7 @@ def activation(name):
 def grad_activation(name):
     f = None
     if 'Relu' in name:
-        f = lambda x: tf.where(x > 0, tf.ones_like(x), tf.zeros_like(x))
+        f = lambda x: tf.where(tf.greater_equal(x, 0), tf.ones_like(x), tf.zeros_like(x))
     elif 'Sigmoid' in name:
         f = lambda x: tf.exp(x) / tf.square(tf.exp(x) + 1.0)
     elif 'Tanh' in name:
@@ -63,62 +63,118 @@ class GradientBasedMethod(object):
         attributions = self.get_symbolic_attribution()
         return self.session.run(attributions, {self.X: self.xs})
 
-    @staticmethod
-    def nonlinearity_grad_override(op, grad):
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
         return grad * grad_activation(op.name)(op.inputs[0])
 
 
-class MethodDummyZero(GradientBasedMethod):
+class DummyZero(GradientBasedMethod):
 
     def get_symbolic_attribution(self,):
-        print('Dummy one')
         return tf.gradients(self.T, self.X)[0]
 
-    @staticmethod
-    def nonlinearity_grad_override(op, grad):
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
         input = op.inputs[0]
         return tf.zeros_like(input)
 
+"""
+Saliency maps
+https://arxiv.org/abs/1312.6034
+"""
+class Saliency(GradientBasedMethod):
 
-class MethodDummyOne(GradientBasedMethod):
+    def get_symbolic_attribution(self):
+        return tf.abs(tf.gradients(self.T, self.X)[0])
 
-    def get_symbolic_attribution(self,):
-        return tf.gradients(self.T, self.X)[0]
-
-    @staticmethod
-    def nonlinearity_grad_override(op, grad):
-        input = op.inputs[0]
-        return tf.ones_like(input)
+"""
+Gradient * Input
+https://arxiv.org/pdf/1704.02685.pdf - https://arxiv.org/abs/1611.07270
+"""
 
 
-class MethodGradientXInput(GradientBasedMethod):
+class GradientXInput(GradientBasedMethod):
+
+    def get_symbolic_attribution(self):
+        return tf.gradients(self.T, self.X)[0] * self.X
+
+
+"""
+Integrated Gradients
+https://arxiv.org/pdf/1703.01365.pdf
+"""
+
+
+class IntegratedGradients(GradientBasedMethod):
+
+    def __init__(self, T, X, xs, session, steps=100, baseline=None):
+        super(IntegratedGradients, self).__init__(T, X, xs, session)
+        self.steps = steps
+        self.baseline = baseline
+
+    def run(self):
+        if self.baseline is None: self.baseline = np.zeros_like(self.xs)
+        else: assert self.baseline.shape == self.xs.shape, 'Baseline must have the same shape of input'
+        attributions = self.get_symbolic_attribution()
+        gradient = None
+        for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
+            xs_mod = self.xs * alpha
+            _attr = self.session.run(attributions, {self.X: xs_mod})
+            if gradient is None: gradient = _attr
+            else: gradient += _attr
+        return gradient * (self.xs - self.baseline) / self.steps
+
+
+"""
+Layer-wise Relevance Propagation with epsilon rule
+http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0130140
+"""
+
+
+class EpsilonLRP(GradientBasedMethod):
+    eps = None
+
+    def __init__(self, T, X, xs, session, epsilon=1e-4):
+        super(EpsilonLRP, self).__init__(T, X, xs, session)
+        self.eps = epsilon
 
     def get_symbolic_attribution(self,):
         return tf.gradients(self.T, self.X)[0] * self.X
 
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
+        output = op.outputs[0]
+        input = op.inputs[0]
+        return grad * output / (input + cls.eps *
+                                tf.where(input >= 0, tf.ones_like(input), -1 * tf.ones_like(input)))
 
 
 
-attribution_methods = {
-    'zero': (MethodDummyZero, 0),
-    'one': (MethodDummyOne, 1),
-    'grad*input': (MethodGradientXInput, 2)
-}
+attribution_methods = OrderedDict({
+    'zero': (DummyZero, 0),
+    'saliency': (Saliency, 1),
+    'grad*input': (GradientXInput, 2),
+    'intgrad': (IntegratedGradients, 3),
+    'elrp': (EpsilonLRP, 4),
+})
 
 @ops.RegisterGradient("DeepExplainGrad")
 def deepexplain_grad(op, grad):
-    #print (op.get_attr("_gradient_op_type"))
     mode = tf.get_default_graph().get_tensor_by_name("deepexplain_mode:0")
-    #print (mode)
-    cases = OrderedDict(
-        (
-            (tf.equal(mode, flag), lambda: method_class.nonlinearity_grad_override(op, grad))
-            for method, (method_class, flag) in attribution_methods.items()
-        )
-    )
-    return tf.case(cases, default=lambda: grad * grad_activation(op.name)(op.inputs[0]))
+    #mode = tf.Print(mode, [mode], 'mode flag: ')
 
+    def default():
+        input = op.inputs[0]
+        return grad * grad_activation(op.name)(input)
 
+    cases = OrderedDict({
+        tf.equal(mode, 0): (lambda: DummyZero.nonlinearity_grad_override(op, grad)),
+        tf.equal(mode, 1): (lambda: Saliency.nonlinearity_grad_override(op, grad)),
+        tf.equal(mode, 2): (lambda: GradientXInput.nonlinearity_grad_override(op, grad)),
+        tf.equal(mode, 3): (lambda: IntegratedGradients.nonlinearity_grad_override(op, grad)),
+        tf.equal(mode, 4): (lambda: EpsilonLRP.nonlinearity_grad_override(op, grad)),
+    })
+    return tf.case(cases, default=default, exclusive=True)
 
 
 
@@ -131,10 +187,15 @@ class DeepExplain(object):
         self.graph = graph
         self.session = sess
         self.graph_context = self.graph.as_default()
+        print (graph)
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
 
+
     def get_override_map(self):
-        return {'Relu': 'DeepExplainGrad'}
+        return {'Relu': 'DeepExplainGrad',
+                'Sigmoid': 'DeepExplainGrad',
+                'Tanh': 'DeepExplainGrad',
+                'Softplus': 'DeepExplainGrad'}
 
     def __enter__(self):
         #Override gradient of all ops created here
@@ -149,14 +210,15 @@ class DeepExplain(object):
         self.graph_context.__exit__(type, value, traceback)
         self.override_context.__exit__(type, value, traceback)
 
-    def explain(self, method, T, X, xs):
+    def explain(self, method, T, X, xs, **kwargs):
         self.method = method
-        print('DeepExplain: running "%s" explanation method' % self.method)
         if self.method in attribution_methods:
             method_class, method_flag = attribution_methods[self.method]
         else:
             raise RuntimeError('Supported methods: zero, one, occlusion')
-        method = method_class(T, X, xs, self.session)
+        print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
+
+        method = method_class(T, X, xs, self.session, **kwargs)
         self.session.run(self.mode_flag.assign(method_flag))
         result = method.run()
         self.session.run(self.mode_flag.assign(-1))
