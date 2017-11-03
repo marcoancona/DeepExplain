@@ -155,39 +155,27 @@ attribution_methods = OrderedDict({
     'saliency': (Saliency, 1),
     'grad*input': (GradientXInput, 2),
     'intgrad': (IntegratedGradients, 3),
-    'elrp': (EpsilonLRP, 4),
+    'e-lrp': (EpsilonLRP, 4),
 })
+_ENABLED_METHOD_CLASS = None
 
 @ops.RegisterGradient("DeepExplainGrad")
 def deepexplain_grad(op, grad):
-    mode = tf.get_default_graph().get_tensor_by_name("deepexplain_mode:0")
-    #mode = tf.Print(mode, [mode], 'mode flag: ')
-
-    def default():
-        input = op.inputs[0]
-        return grad * grad_activation(op.name)(input)
-
-    cases = OrderedDict({
-        tf.equal(mode, 0): (lambda: DummyZero.nonlinearity_grad_override(op, grad)),
-        tf.equal(mode, 1): (lambda: Saliency.nonlinearity_grad_override(op, grad)),
-        tf.equal(mode, 2): (lambda: GradientXInput.nonlinearity_grad_override(op, grad)),
-        tf.equal(mode, 3): (lambda: IntegratedGradients.nonlinearity_grad_override(op, grad)),
-        tf.equal(mode, 4): (lambda: EpsilonLRP.nonlinearity_grad_override(op, grad)),
-    })
-    return tf.case(cases, default=default, exclusive=True)
-
+    global _ENABLED_METHOD_CLASS
+    if _ENABLED_METHOD_CLASS is not None:
+        return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
+    else:
+        return grad * grad_activation(op.name)(op.inputs[0])
 
 
 class DeepExplain(object):
 
     def __init__(self, graph=tf.get_default_graph(), sess=tf.get_default_session()):
         self.method = None
-        self.mode_flag = None
         self.batch_size = None
         self.graph = graph
         self.session = sess
         self.graph_context = self.graph.as_default()
-        print (graph)
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
 
 
@@ -198,12 +186,9 @@ class DeepExplain(object):
                 'Softplus': 'DeepExplainGrad'}
 
     def __enter__(self):
-        #Override gradient of all ops created here
+        # Override gradient of all ops created in context
         self.graph_context.__enter__()
         self.override_context.__enter__()
-        self.mode_flag = tf.Variable(initial_value=-1, dtype=tf.int8, name="deepexplain_mode")
-        print(self.mode_flag.name)
-        print ('Override')
         return self
 
     def __exit__(self, type, value, traceback):
@@ -211,17 +196,18 @@ class DeepExplain(object):
         self.override_context.__exit__(type, value, traceback)
 
     def explain(self, method, T, X, xs, **kwargs):
+        global _ENABLED_METHOD_CLASS
         self.method = method
         if self.method in attribution_methods:
             method_class, method_flag = attribution_methods[self.method]
         else:
-            raise RuntimeError('Supported methods: zero, one, occlusion')
+            raise RuntimeError('Method must be in %s' % list(attribution_methods.keys()))
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
 
         method = method_class(T, X, xs, self.session, **kwargs)
-        self.session.run(self.mode_flag.assign(method_flag))
+        _ENABLED_METHOD_CLASS = method
         result = method.run()
-        self.session.run(self.mode_flag.assign(-1))
+        _ENABLED_METHOD_CLASS = None
         return result
 
 
