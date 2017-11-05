@@ -1,6 +1,6 @@
 from unittest import TestCase
 import pkg_resources
-import logging, os
+import logging, os, warnings
 import tensorflow as tf
 import numpy as np
 
@@ -113,17 +113,37 @@ class TestDeepExplainGeneralTF(TestCase):
                        'Sigmoid': tf.nn.sigmoid,
                        'Softplus': tf.nn.softplus,
                        'Tanh': tf.nn.tanh}
-        for name, f in activations.items():
-            x1 = f(X)
+        for name in activations:
+            x1 = activations[name](X)
             x1_g = tf.gradients(x1, X)[0]
             self.assertEqual(x1_g.op.type, '%sGrad' % name)
 
         # Override (note: that need to pass graph! Multiple thread testing??)
         with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
-            for name, f in activations.items():
+            for name in activations:
                 # Gradients of nonlinear ops are overriden
-                x2 = f(X)
+                x2 = activations[name](X)
                 self.assertEqual(x2.op.get_attr('_gradient_op_type').decode('utf-8'), 'DeepExplainGrad')
+
+    def test_supported_activations(self):
+        X = tf.placeholder("float", [None, 3])
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            xi = [[-1, 0, 1]]
+            Y = tf.nn.relu(X)
+            r = self.session.run(Y, {X: xi})
+            np.testing.assert_almost_equal(r[0], [0, 0, 1], 7)
+            Y = tf.nn.elu(X)
+            r = self.session.run(Y, {X: xi})
+            np.testing.assert_almost_equal(r[0], [-0.632120558, 0, 1], 7)
+            Y = tf.nn.sigmoid(X)
+            r = self.session.run(Y, {X: xi})
+            np.testing.assert_almost_equal(r[0], [0.268941421, 0.5, 0.731058578], 7)
+            Y = tf.nn.tanh(X)
+            r = self.session.run(Y, {X: xi})
+            np.testing.assert_almost_equal(r[0], [-0.761594155, 0, 0.761594155], 7)
+            Y = tf.nn.softplus(X)
+            r = self.session.run(Y, {X: xi})
+            np.testing.assert_almost_equal(r[0], [0.313261687, 0.693147181, 1.31326168], 7)
 
     def test_override_as_default(self):
         """
@@ -222,7 +242,65 @@ class TestIntegratedGradientsMethod(TestCase):
     def test_int_grad_baseline(self):
         with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
             X, out = simpler_model(self.session)
-            xi = np.array([[-10, -5], [3, 1]])
-            attributions = de.explain('intgrad', out, X, xi, baseline=xi)
+            xi = np.array([[3, 1]])
+            attributions = de.explain('intgrad', out, X, xi, baseline=xi[0])
             self.assertEqual(attributions.shape, xi.shape)
-            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [0.0, 0.0]], 5)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)
+
+class TestEpsilonLRPMethod(TestCase):
+
+    def setUp(self):
+        self.session = tf.Session()
+
+    def tearDown(self):
+        self.session.close()
+        tf.reset_default_graph()
+
+    def test_elrp_method(self):
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            attributions = de.explain('e-lrp', out, X, xi)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 3)
+
+    def test_elrp_epsilon(self):
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            attributions = de.explain('e-lrp', out, X, xi, epsilon=1e-9)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 7)
+
+    def test_elrp_zero_epsilon(self):
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            with self.assertRaises(AssertionError):
+                de.explain('e-lrp', out, X, xi, epsilon=0)
+
+
+class TestDeepLIFTMethod(TestCase):
+
+    def setUp(self):
+        self.session = tf.Session()
+
+    def tearDown(self):
+        self.session.close()
+        tf.reset_default_graph()
+
+    def test_deeplift(self):
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            attributions = de.explain('deeplift', out, X, xi)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [2.0, -1.0]], 10)
+
+    def test_deeplift_baseline(self):
+        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            X, out = simpler_model(self.session)
+            xi = np.array([[3, 1]])
+            attributions = de.explain('deeplift', out, X, xi, baseline=xi[0])
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)

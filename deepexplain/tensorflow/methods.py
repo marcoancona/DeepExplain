@@ -2,51 +2,59 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import gen_nn_ops, gen_math_ops, math_ops
+from tensorflow.python.ops import nn_grad
 from collections import OrderedDict
 
+SUPPORTED_ACTIVATIONS = [
+    'relu', 'elu', 'sigmoid', 'tanh', 'softplus'
+]
 
-def np_activation(name):
-    f = None
-    if 'Relu' in name:
-        f = lambda x: x * (x > 0)
-    elif 'Sigmoid' in name:
-        f = lambda x: 1 / (1 + np.exp(-x))
-    elif 'Tanh' in name:
-        f = np.tanh
-    elif 'Softplus' in name:
-        f = lambda x: np.log(1 + np.exp(x))
-    return f
+
+# def np_activation(name):
+#     f = None
+#     if 'Relu' in name:
+#         f = lambda x: x * (x > 0)
+#     elif 'Sigmoid' in name:
+#         f = lambda x: 1 / (1 + np.exp(-x))
+#     elif 'Tanh' in name:
+#         f = np.tanh
+#     elif 'Softplus' in name:
+#         f = lambda x: np.log(1 + np.exp(x))
+#     return f
 
 
 def activation(name):
-    f = None
-    if 'Relu' in name:
-        f = tf.nn.relu
-    elif 'Sigmoid' in name:
-        f = tf.nn.sigmoid
-    elif 'Tanh' in name:
-        f = tf.nn.tanh
-    elif 'Softplus' in name:
-        f = tf.nn.softplus
+    a_name = next((x for x in SUPPORTED_ACTIVATIONS if x in name.lower()), None)
+    if a_name is None:
+        raise RuntimeError('Activation function (%s) not supported' % name)
+    f = getattr(tf.nn, a_name)
     return f
 
 
-def grad_activation(name):
-    f = None
-    if 'Relu' in name:
-        f = lambda x: tf.where(tf.greater_equal(x, 0), tf.ones_like(x), tf.zeros_like(x))
-    elif 'Sigmoid' in name:
-        f = lambda x: tf.exp(x) / tf.square(tf.exp(x) + 1.0)
-    elif 'Tanh' in name:
-        f = lambda x: 1.0 / tf.square(tf.cosh(x))
-    elif 'Softplus' in name:
-        f = lambda x:  tf.exp(x) / (tf.exp(x) + 1.0)
-    return f
+def original_grad(op, grad):
+    a_name = next((x for x in SUPPORTED_ACTIVATIONS if x in op.name.lower()), None)
+    if a_name is None:
+        raise RuntimeError('Activation function (%s) not supported' % op.name.lower())
+    f = getattr(nn_grad, '_%sGrad' % a_name.capitalize())
+    return f(op, grad)
 
+
+# def grad_activation(name):
+#     f = None
+#     if 'Relu' in name:
+#         f = lambda x: tf.where(tf.greater_equal(x, 0), tf.ones_like(x), tf.zeros_like(x))
+#     elif 'Sigmoid' in name:
+#         f = lambda x: tf.exp(x) / tf.square(tf.exp(x) + 1.0)
+#     elif 'Tanh' in name:
+#         f = lambda x: 1.0 / tf.square(tf.cosh(x))
+#     elif 'Softplus' in name:
+#         f = lambda x:  tf.exp(x) / (tf.exp(x) + 1.0)
+#     return f
 
 
 class GradientBasedMethod(object):
@@ -65,7 +73,7 @@ class GradientBasedMethod(object):
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
-        return grad * grad_activation(op.name)(op.inputs[0])
+        return original_grad(op, grad)
 
 
 class DummyZero(GradientBasedMethod):
@@ -113,8 +121,12 @@ class IntegratedGradients(GradientBasedMethod):
         self.baseline = baseline
 
     def run(self):
-        if self.baseline is None: self.baseline = np.zeros_like(self.xs)
-        else: assert self.baseline.shape == self.xs.shape, 'Baseline must have the same shape of input'
+        if self.baseline is None: self.baseline = np.zeros((1,)+self.xs.shape[1:])
+        elif self.baseline.shape == self.xs.shape[1:]:
+            self.baseline = np.expand_dims(self.baseline, 0)
+        else:
+            raise RuntimeError('Baseline shape %s does not match expected shape %s'
+                               % (self.baseline.shape, self.xs.shape[1:]))
         attributions = self.get_symbolic_attribution()
         gradient = None
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
@@ -136,17 +148,80 @@ class EpsilonLRP(GradientBasedMethod):
 
     def __init__(self, T, X, xs, session, epsilon=1e-4):
         super(EpsilonLRP, self).__init__(T, X, xs, session)
-        self.eps = epsilon
+        assert epsilon > 0.0, 'LRP epsilon must be greater than zero'
+        global eps
+        eps = epsilon
 
-    def get_symbolic_attribution(self,):
+    def get_symbolic_attribution(self):
+        print (eps)
         return tf.gradients(self.T, self.X)[0] * self.X
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
         output = op.outputs[0]
         input = op.inputs[0]
-        return grad * output / (input + cls.eps *
+        return grad * output / (input + eps *
                                 tf.where(input >= 0, tf.ones_like(input), -1 * tf.ones_like(input)))
+
+"""
+DeepLIFT
+This reformulation only considers the "Rescale" rule
+https://arxiv.org/abs/1704.02685
+"""
+
+
+class DeepLIFTRescale(GradientBasedMethod):
+
+    _deeplift_ref = {}
+
+    def __init__(self, T, X, xs, session, baseline=None):
+        super(DeepLIFTRescale, self).__init__(T, X, xs, session)
+        self.baseline = baseline
+
+    def get_symbolic_attribution(self,):
+        return tf.gradients(self.T, self.X)[0] * (self.X - self.baseline)
+
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
+        output = op.outputs[0]
+        input = op.inputs[0]
+        ref_input = cls._deeplift_ref[op.name]
+        ref_output = activation(op.name)(ref_input)
+        delta_out = output - ref_output
+        delta_in = input - ref_input
+        instant_grad = activation(op.name)(0.5 * (ref_input + input))
+        return tf.where(tf.abs(delta_in) > 1e-5, grad * delta_out / delta_in,
+                               original_grad(instant_grad.op, grad))
+
+    def run(self):
+        if self.baseline is None: self.baseline = np.zeros((1,)+self.xs.shape[1:])
+        elif self.baseline.shape == self.xs.shape[1:]:
+            self.baseline = np.expand_dims(self.baseline, 0)
+        else:
+            raise RuntimeError('Baseline shape %s does not match expected shape %s'
+                               % (self.baseline.shape, self.xs.shape[1:]))
+
+        # Init references with a forward pass
+        self._init_references()
+
+        # Run the default run
+        return super(DeepLIFTRescale, self).run()
+
+    def _init_references(self):
+        print ('DeepLIFT: computing references...')
+        sys.stdout.flush()
+        self._deeplift_ref.clear()
+        ops = []
+        g = tf.get_default_graph()
+        for op in g.get_operations():
+            if len(op.inputs) > 0 and not op.name.startswith('gradients'):
+                if any(s in op.name for s in ['Relu', 'Sigmoid', 'Tanh', 'Softplus']):
+                    ops.append(op)
+        YR = self.session.run([o.inputs[0] for o in ops], {self.X: self.baseline})
+        for (r, op) in zip(YR, ops):
+            self._deeplift_ref[op.name] = r
+        print('DeepLIFT: references ready')
+        sys.stdout.flush()
 
 
 
@@ -156,6 +231,7 @@ attribution_methods = OrderedDict({
     'grad*input': (GradientXInput, 2),
     'intgrad': (IntegratedGradients, 3),
     'e-lrp': (EpsilonLRP, 4),
+    'deeplift': (DeepLIFTRescale, 5),
 })
 _ENABLED_METHOD_CLASS = None
 
@@ -165,7 +241,7 @@ def deepexplain_grad(op, grad):
     if _ENABLED_METHOD_CLASS is not None:
         return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
     else:
-        return grad * grad_activation(op.name)(op.inputs[0])
+        return original_grad(op, grad)
 
 
 class DeepExplain(object):
@@ -177,7 +253,6 @@ class DeepExplain(object):
         self.session = sess
         self.graph_context = self.graph.as_default()
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
-
 
     def get_override_map(self):
         return {'Relu': 'DeepExplainGrad',
