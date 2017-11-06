@@ -119,7 +119,7 @@ class TestDeepExplainGeneralTF(TestCase):
             self.assertEqual(x1_g.op.type, '%sGrad' % name)
 
         # Override (note: that need to pass graph! Multiple thread testing??)
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             for name in activations:
                 # Gradients of nonlinear ops are overriden
                 x2 = activations[name](X)
@@ -127,7 +127,7 @@ class TestDeepExplainGeneralTF(TestCase):
 
     def test_supported_activations(self):
         X = tf.placeholder("float", [None, 3])
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             xi = [[-1, 0, 1]]
             Y = tf.nn.relu(X)
             r = self.session.run(Y, {X: xi})
@@ -148,7 +148,7 @@ class TestDeepExplainGeneralTF(TestCase):
     def test_warning_unsupported_activations(self):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+            with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
                 X = tf.placeholder("float", [None, 3])
                 Y = tf.nn.relu6(X)  # < an unsupported activation
                 xi = [[-1, 0, 1]]
@@ -160,7 +160,7 @@ class TestDeepExplainGeneralTF(TestCase):
         """
         In DeepExplain context, nonlinearities behave as default, including training time
         """
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             r = train_xor(self.session)
             self.assertTrue(r)
 
@@ -175,7 +175,7 @@ class TestDummyMethod(TestCase):
         tf.reset_default_graph()
 
     def test_dummy_zero(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simple_model(tf.nn.sigmoid, self.session)
             xi = np.array([[10, -10]])
             attributions = de.explain('zero', out, X, xi)
@@ -183,7 +183,7 @@ class TestDummyMethod(TestCase):
             np.testing.assert_almost_equal(attributions[0], [0.0, 0.0], 10)
 
     def test_gradient_restored(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simple_model(tf.nn.sigmoid, self.session)
             xi = np.array([[10, -10]])
             de.explain('zero', out, X, xi)
@@ -201,7 +201,7 @@ class TestSaliencyMethod(TestCase):
         tf.reset_default_graph()
 
     def test_saliency_method(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('saliency', out, X, xi)
@@ -218,7 +218,7 @@ class TestGradInputMethod(TestCase):
         tf.reset_default_graph()
 
     def test_saliency_method(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('grad*input', out, X, xi)
@@ -235,7 +235,7 @@ class TestIntegratedGradientsMethod(TestCase):
         tf.reset_default_graph()
 
     def test_int_grad(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('intgrad', out, X, xi)
@@ -243,7 +243,7 @@ class TestIntegratedGradientsMethod(TestCase):
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 1)
 
     def test_int_grad_higher_precision(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('intgrad', out, X, xi, steps=500)
@@ -251,7 +251,7 @@ class TestIntegratedGradientsMethod(TestCase):
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 2)
 
     def test_int_grad_baseline(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model(self.session)
             xi = np.array([[3, 1]])
             attributions = de.explain('intgrad', out, X, xi, baseline=xi[0])
@@ -268,7 +268,7 @@ class TestEpsilonLRPMethod(TestCase):
         tf.reset_default_graph()
 
     def test_elrp_method(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('elrp', out, X, xi)
@@ -276,7 +276,7 @@ class TestEpsilonLRPMethod(TestCase):
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 3)
 
     def test_elrp_epsilon(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('elrp', out, X, xi, epsilon=1e-9)
@@ -284,7 +284,7 @@ class TestEpsilonLRPMethod(TestCase):
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 7)
 
     def test_elrp_zero_epsilon(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             with self.assertRaises(AssertionError):
@@ -301,7 +301,7 @@ class TestDeepLIFTMethod(TestCase):
         tf.reset_default_graph()
 
     def test_deeplift(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('deeplift', out, X, xi)
@@ -309,9 +309,46 @@ class TestDeepLIFTMethod(TestCase):
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [2.0, -1.0]], 10)
 
     def test_deeplift_baseline(self):
-        with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model(self.session)
             xi = np.array([[3, 1]])
             attributions = de.explain('deeplift', out, X, xi, baseline=xi[0])
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)
+
+
+class TestOcclusionMethod(TestCase):
+
+    def setUp(self):
+        self.session = tf.Session()
+
+    def tearDown(self):
+        self.session.close()
+        tf.reset_default_graph()
+
+    def test_occlusion(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            attributions = de.explain('occlusion', out, X, xi)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.0, -1.0]], 10)
+
+    def test_window_shape(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simpler_model(self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            attributions = de.explain('occlusion', out, X, xi, window_shape=(2,))
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [0.5, 0.5]], 10)
+
+    def test_nan_warning(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+                X, out = simpler_model(self.session)
+                xi = np.array([[-10, -5], [3, 1]])
+                attributions = de.explain('occlusion', out, X, xi, step=2)
+                self.assertEqual(attributions.shape, xi.shape)
+                np.testing.assert_almost_equal(attributions, [[0.0, np.nan], [1.0, np.nan]], 10)
+                assert any(["nans" in str(wi.message) for wi in w])

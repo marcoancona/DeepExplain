@@ -4,10 +4,10 @@ from __future__ import print_function
 
 import sys
 import numpy as np
-import warnings, logging
+from skimage.util import view_as_windows
+import warnings
 import tensorflow as tf
 from tensorflow.python.framework import ops
-from tensorflow.python.ops import gen_nn_ops, gen_math_ops, math_ops
 from tensorflow.python.ops import nn_grad
 from collections import OrderedDict
 
@@ -20,20 +20,17 @@ UNSUPPORTED_ACTIVATIONS = [
 ]
 
 
-# def np_activation(name):
-#     f = None
-#     if 'Relu' in name:
-#         f = lambda x: x * (x > 0)
-#     elif 'Sigmoid' in name:
-#         f = lambda x: 1 / (1 + np.exp(-x))
-#     elif 'Tanh' in name:
-#         f = np.tanh
-#     elif 'Softplus' in name:
-#         f = lambda x: np.log(1 + np.exp(x))
-#     return f
+# -----------------------------------------------------------------------------
+# UTILITY FUNCTIONS
+# -----------------------------------------------------------------------------
 
 
 def activation(type):
+    """
+    Returns Tensorflow's activation op, given its type
+    :param type: string
+    :return: op
+    """
     if type not in SUPPORTED_ACTIVATIONS:
         warnings.warn('Activation function (%s) not supported' % type)
     f = getattr(tf.nn, type.lower())
@@ -41,25 +38,27 @@ def activation(type):
 
 
 def original_grad(op, grad):
+    """
+    Return original Tensorflow gradient for an op
+    :param op: op
+    :param grad: Tensor
+    :return: Tensor
+    """
     if op.type not in SUPPORTED_ACTIVATIONS:
         warnings.warn('Activation function (%s) not supported' % op.type)
     f = getattr(nn_grad, '_%sGrad' % op.type)
     return f(op, grad)
 
 
-# def grad_activation(name):
-#     f = None
-#     if 'Relu' in name:
-#         f = lambda x: tf.where(tf.greater_equal(x, 0), tf.ones_like(x), tf.zeros_like(x))
-#     elif 'Sigmoid' in name:
-#         f = lambda x: tf.exp(x) / tf.square(tf.exp(x) + 1.0)
-#     elif 'Tanh' in name:
-#         f = lambda x: 1.0 / tf.square(tf.cosh(x))
-#     elif 'Softplus' in name:
-#         f = lambda x:  tf.exp(x) / (tf.exp(x) + 1.0)
-#     return f
+# -----------------------------------------------------------------------------
+# ATTRIBUTION METHODS BASE CLASSES
+# -----------------------------------------------------------------------------
+
 
 class AttributionMethod(object):
+    """
+    Attribution method base class
+    """
     def __init__(self, T, X, xs, session):
         self.T = T
         self.X = X
@@ -68,7 +67,9 @@ class AttributionMethod(object):
 
 
 class GradientBasedMethod(AttributionMethod):
-
+    """
+    Base class for gradient-based attribution methods
+    """
     def get_symbolic_attribution(self):
         return tf.gradients(self.T, self.X)[0]
 
@@ -82,13 +83,29 @@ class GradientBasedMethod(AttributionMethod):
 
 
 class PerturbationBasedMethod(AttributionMethod):
+    """
+       Base class for perturbation-based attribution methods
+       """
+    def __init__(self, T, X, xs, session):
+        super(PerturbationBasedMethod, self).__init__(T, X, xs, session)
+        self.base_activation = None
+
+    def _run_input(self, x):
+        return self.session.run(self.T, {self.X: x})
+
+    def _run_original(self):
+        return self._run_input(self.xs)
 
     def run(self):
-        pass
-        return self.session.run(self.T, {self.X: self.xs})
+        raise RuntimeError('Abstract: cannot run PerturbationBasedMethod')
 
 
-# -----------------------------------------------------------
+# -----------------------------------------------------------------------------
+# ATTRIBUTION METHODS
+# -----------------------------------------------------------------------------
+"""
+Returns zero attributions. For testing only.
+"""
 
 
 class DummyZero(GradientBasedMethod):
@@ -105,10 +122,13 @@ class DummyZero(GradientBasedMethod):
 Saliency maps
 https://arxiv.org/abs/1312.6034
 """
+
+
 class Saliency(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
         return tf.abs(tf.gradients(self.T, self.X)[0])
+
 
 """
 Gradient * Input
@@ -168,7 +188,6 @@ class EpsilonLRP(GradientBasedMethod):
         eps = epsilon
 
     def get_symbolic_attribution(self):
-        print (eps)
         return tf.gradients(self.T, self.X)[0] * self.X
 
     @classmethod
@@ -223,7 +242,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         return super(DeepLIFTRescale, self).run()
 
     def _init_references(self):
-        print ('DeepLIFT: computing references...')
+        #print ('DeepLIFT: computing references...')
         sys.stdout.flush()
         self._deeplift_ref.clear()
         ops = []
@@ -235,7 +254,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         YR = self.session.run([o.inputs[0] for o in ops], {self.X: self.baseline})
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
-        print('DeepLIFT: references ready')
+        #print('DeepLIFT: references ready')
         sys.stdout.flush()
 
 
@@ -243,20 +262,75 @@ class DeepLIFTRescale(GradientBasedMethod):
 Occlusion method
 Generalization of the grey-box method presented in https://arxiv.org/pdf/1311.2901.pdf
 This method performs a systematic perturbation of contiguous hyperpatches in the input,
-replacing each patch with a user-defined value (by default 0). 
+replacing each patch with a user-defined value (by default 0).
+
+window_shape : integer or tuple of length xs_ndim
+Defines the shape of the elementary n-dimensional orthotope the rolling window view.
+If an integer is given, the shape will be a hypercube of sidelength given by its value.
+
+step : integer or tuple of length xs_ndim
+Indicates step size at which extraction shall be performed.
+If integer is given, then the step is uniform in all dimensions.
 """
 
 
 class Occlusion(PerturbationBasedMethod):
 
-    _deeplift_ref = {}
+    def __init__(self, T, X, xs, session, window_shape=None, step=None):
+        super(Occlusion, self).__init__(T, X, xs, session)
+        input_shape = xs[0].shape
+        if window_shape is not None:
+            assert len(window_shape) == len(input_shape), \
+                'window_shape must have length of input (%d)' % len(input_shape)
+            self.window_shape = tuple(window_shape)
+        else:
+            self.window_shape = (1,) * len(input_shape)
 
-    def __init__(self, T, X, xs, session, baseline=None):
-        super(DeepLIFTRescale, self).__init__(T, X, xs, session)
-        self.baseline = baseline
+        if step is not None:
+            assert isinstance(step, int) or len(step) == len(input_shape), \
+                'step must be integer or tuple with the length of input (%d)' % len(input_shape)
+            self.step = step
+        else:
+            self.step = 1
+        self.replace_value = 0.0
+        print('Input shape: %s; window_shape %s; step %s' % (input_shape, self.window_shape, self.step))
 
-    def get_symbolic_attribution(self,):
-        return tf.gradients(self.T, self.X)[0] * (self.X - self.baseline)
+    def run(self):
+        self._run_original()
+
+        input_shape = self.xs.shape[1:]
+        batch_size = self.xs.shape[0]
+        total_dim = np.asscalar(np.prod(input_shape))
+
+        # Create mask
+        index_matrix = np.arange(total_dim).reshape(input_shape)
+        idx_patches = view_as_windows(index_matrix, self.window_shape, self.step).reshape((-1,) + self.window_shape)
+        heatmap = np.zeros_like(self.xs, dtype=np.float32).reshape((-1), total_dim)
+        w = np.zeros_like(heatmap)
+
+        # Compute original output
+        eval0 = self._run_original()
+
+        # Start perturbation loop
+        for i, p in enumerate(idx_patches):
+            mask = np.ones(input_shape).flatten()
+            mask[p.flatten()] = self.replace_value
+            masked_xs = mask.reshape((1,) + input_shape) * self.xs
+            delta = eval0 - self._run_input(masked_xs)
+            delta_aggregated = np.sum(delta.reshape((batch_size, -1)), -1, keepdims=True)
+            heatmap[:, p.flatten()] += delta_aggregated
+            w[:, p.flatten()] += p.size
+
+        attribution = np.reshape(heatmap / w, self.xs.shape)
+        if np.isnan(attribution).any():
+            warnings.warn('Attributions generated by Occlusion method contain nans, '
+                          'probably because window_shape and step do not allow to cover the all input.')
+        return attribution
+
+
+# -----------------------------------------------------------------------------
+# END ATTRIBUTION METHODS
+# -----------------------------------------------------------------------------
 
 
 attribution_methods = OrderedDict({
@@ -266,6 +340,7 @@ attribution_methods = OrderedDict({
     'intgrad': (IntegratedGradients, 3),
     'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
+    'occlusion': (Occlusion, 6)
 })
 _ENABLED_METHOD_CLASS = None
 
@@ -282,18 +357,15 @@ def deepexplain_grad(op, grad):
 
 class DeepExplain(object):
 
-    def __init__(self, graph=tf.get_default_graph(), sess=tf.get_default_session()):
+    def __init__(self, graph=tf.get_default_graph(), session=tf.get_default_session()):
         self.method = None
         self.batch_size = None
         self.graph = graph
-        self.session = sess
+        self.session = session
         self.graph_context = self.graph.as_default()
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
-
-    def get_override_map(self):
-        map = {}
-        for a in SUPPORTED_ACTIVATIONS: map[a] = 'DeepExplainGrad'
-        return map
+        if self.session is None:
+            raise RuntimeError('DeepExplain: could not retrieve a session. Use DeepExplain(session=your_session).')
 
     def __enter__(self):
         # Override gradient of all ops created in context
@@ -321,6 +393,10 @@ class DeepExplain(object):
         return result
 
     @staticmethod
+    def get_override_map():
+        return dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
+
+    @staticmethod
     def _check_ops():
         g = tf.get_default_graph()
         for op in g.get_operations():
@@ -330,81 +406,6 @@ class DeepExplain(object):
                                   'This might lead to unexpected or wrong results.' % op.type)
 
 
-# class BaseAttributionMethod(object):
-#     def __init__(self, batch_size=1, input_batch_size=None):
-#         self.model = None
-#         self.batch_size = batch_size
-#         self.input_batch_size = batch_size
-#         self.name = 'BaseClass'
-#         self.eval_x = None
-#         self.eval_y = None
-#         self.target_input_idx = None
-#         self.target_output_idx = None
-#
-#     """
-#     Bind model. If target input and output are not first and last layers
-#     of the network, target layer indeces should also be provided.
-#     """
-#     def bind_model(self, model):
-#         self.model = model
-#         print ('Target output: %s' % self.model.layers[-1].output)
-#
-#     def gradient_override_map(self):
-#         return {}
-#
-#     def sanity_check(self, eval_x, eval_y, maps):
-#         pass
-#
-#     def target_input(self):
-#         return self.model.layers[0].input
-#
-#     def target_output(self):
-#         return self.model.layers[-1].output
-#
-#     def get_numeric_sensitivity(self, eval_x, eval_y, shape=None, **kwargs):
-#         """
-#         Return sensitivity map as numpy array
-#         :param eval_x: numpy input to the model
-#         :param eval_y: numpy labels
-#         :param shape: if provided, the sensitivity will be reshaped to this shape
-#         :return: numpy array with shape of eval_x
-#         """
-#         self.eval_x = eval_x
-#         self.eval_y = eval_y
-#         sensitivity = None
-#         shape = K.int_shape(self.target_input())[1:]
-#
-#         #y_ = Input(batch_shape=(self.batch_size,) + tuple(eval_y.shape[1:]))  # placeholder for labels
-#         print ('eval_y shape: ', eval_y.shape)
-#         y_ = K.placeholder(shape=(None, ) + tuple(eval_y.shape[1:]), name='y_label')  # placeholder for labels
-#         symbolic_sensitivity = self.get_symbolic_sensitivity(y_)
-#         evaluate = K.function([self.model.inputs[0], y_], [symbolic_sensitivity])
-#
-#         for i in range(int(len(eval_x) / self.batch_size) + 1):
-#             x = eval_x[self.batch_size*i:self.batch_size*(i+1)]
-#             y = eval_y[self.batch_size*i:self.batch_size*(i+1)]
-#             self.input_batch_size = len(x)
-#             if self.input_batch_size > 0:
-#                 tmp = evaluate([x, y])[0]
-#                 if sensitivity is None:
-#                     sensitivity = tmp
-#                 else:
-#                     sensitivity = np.append(sensitivity, tmp, axis=0)
-#
-#         if shape is not None:
-#             sensitivity = sensitivity.reshape((self.eval_x.shape[0],) + shape)
-#
-#         # Run sanity check if available
-#         self.sanity_check(eval_x, eval_y, sensitivity)
-#         return sensitivity
-#
-#     def get_symbolic_sensitivity(self, eval_y):
-#         """
-#         Return sensitivity map as numpy array
-#         :param eval_y: placeholder (Tensor) for labels
-#         :return: Tensor with shape of eval_x
-#         """
-#         raise RuntimeError('Calling get_symbolic_sensitivity on abstract class')
 
 
 
