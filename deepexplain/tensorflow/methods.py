@@ -314,8 +314,8 @@ class DeepExplain(object):
             raise RuntimeError('Method must be in %s' % list(attribution_methods.keys()))
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
         self._check_ops()
-        method = method_class(T, X, xs, self.session, **kwargs)
-        _ENABLED_METHOD_CLASS = method
+        _ENABLED_METHOD_CLASS = method_class
+        method = _ENABLED_METHOD_CLASS(T, X, xs, self.session, **kwargs)
         result = method.run()
         _ENABLED_METHOD_CLASS = None
         return result
