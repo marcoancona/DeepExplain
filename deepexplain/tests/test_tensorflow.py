@@ -145,6 +145,17 @@ class TestDeepExplainGeneralTF(TestCase):
             r = self.session.run(Y, {X: xi})
             np.testing.assert_almost_equal(r[0], [0.313261687, 0.693147181, 1.31326168], 7)
 
+    def test_warning_unsupported_activations(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
+                X = tf.placeholder("float", [None, 3])
+                Y = tf.nn.relu6(X)  # < an unsupported activation
+                xi = [[-1, 0, 1]]
+                e = de.explain('elrp', Y, X, xi)
+                print ([wi.message for wi in w])
+                assert any(["unsupported activation" in str(wi.message) for wi in w])
+
     def test_override_as_default(self):
         """
         In DeepExplain context, nonlinearities behave as default, including training time
@@ -260,7 +271,7 @@ class TestEpsilonLRPMethod(TestCase):
         with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
-            attributions = de.explain('e-lrp', out, X, xi)
+            attributions = de.explain('elrp', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 3)
 
@@ -268,7 +279,7 @@ class TestEpsilonLRPMethod(TestCase):
         with DeepExplain(graph=tf.get_default_graph(), sess=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
-            attributions = de.explain('e-lrp', out, X, xi, epsilon=1e-9)
+            attributions = de.explain('elrp', out, X, xi, epsilon=1e-9)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 7)
 
@@ -277,7 +288,7 @@ class TestEpsilonLRPMethod(TestCase):
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
             with self.assertRaises(AssertionError):
-                de.explain('e-lrp', out, X, xi, epsilon=0)
+                de.explain('elrp', out, X, xi, epsilon=0)
 
 
 class TestDeepLIFTMethod(TestCase):

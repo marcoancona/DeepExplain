@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import sys
 import numpy as np
+import warnings, logging
 import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import gen_nn_ops, gen_math_ops, math_ops
@@ -11,7 +12,11 @@ from tensorflow.python.ops import nn_grad
 from collections import OrderedDict
 
 SUPPORTED_ACTIVATIONS = [
-    'relu', 'elu', 'sigmoid', 'tanh', 'softplus'
+    'Relu', 'Elu', 'Sigmoid', 'Tanh', 'Softplus'
+]
+
+UNSUPPORTED_ACTIVATIONS = [
+    'CRelu', 'Relu6', 'Softsign'
 ]
 
 
@@ -28,19 +33,17 @@ SUPPORTED_ACTIVATIONS = [
 #     return f
 
 
-def activation(name):
-    a_name = next((x for x in SUPPORTED_ACTIVATIONS if x in name.lower()), None)
-    if a_name is None:
-        raise RuntimeError('Activation function (%s) not supported' % name)
-    f = getattr(tf.nn, a_name)
+def activation(type):
+    if type not in SUPPORTED_ACTIVATIONS:
+        warnings.warn('Activation function (%s) not supported' % type)
+    f = getattr(tf.nn, type.lower())
     return f
 
 
 def original_grad(op, grad):
-    a_name = next((x for x in SUPPORTED_ACTIVATIONS if x in op.name.lower()), None)
-    if a_name is None:
-        raise RuntimeError('Activation function (%s) not supported' % op.name.lower())
-    f = getattr(nn_grad, '_%sGrad' % a_name.capitalize())
+    if op.type not in SUPPORTED_ACTIVATIONS:
+        warnings.warn('Activation function (%s) not supported' % op.type)
+    f = getattr(nn_grad, '_%sGrad' % op.type)
     return f(op, grad)
 
 
@@ -56,13 +59,15 @@ def original_grad(op, grad):
 #         f = lambda x:  tf.exp(x) / (tf.exp(x) + 1.0)
 #     return f
 
-
-class GradientBasedMethod(object):
+class AttributionMethod(object):
     def __init__(self, T, X, xs, session):
         self.T = T
         self.X = X
         self.xs = xs
         self.session = session
+
+
+class GradientBasedMethod(AttributionMethod):
 
     def get_symbolic_attribution(self):
         return tf.gradients(self.T, self.X)[0]
@@ -74,6 +79,16 @@ class GradientBasedMethod(object):
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
         return original_grad(op, grad)
+
+
+class PerturbationBasedMethod(AttributionMethod):
+
+    def run(self):
+        pass
+        return self.session.run(self.T, {self.X: self.xs})
+
+
+# -----------------------------------------------------------
 
 
 class DummyZero(GradientBasedMethod):
@@ -186,10 +201,10 @@ class DeepLIFTRescale(GradientBasedMethod):
         output = op.outputs[0]
         input = op.inputs[0]
         ref_input = cls._deeplift_ref[op.name]
-        ref_output = activation(op.name)(ref_input)
+        ref_output = activation(op.type)(ref_input)
         delta_out = output - ref_output
         delta_in = input - ref_input
-        instant_grad = activation(op.name)(0.5 * (ref_input + input))
+        instant_grad = activation(op.type)(0.5 * (ref_input + input))
         return tf.where(tf.abs(delta_in) > 1e-5, grad * delta_out / delta_in,
                                original_grad(instant_grad.op, grad))
 
@@ -215,7 +230,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         g = tf.get_default_graph()
         for op in g.get_operations():
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
-                if any(s in op.name for s in ['Relu', 'Sigmoid', 'Tanh', 'Softplus']):
+                if op.type in SUPPORTED_ACTIVATIONS:
                     ops.append(op)
         YR = self.session.run([o.inputs[0] for o in ops], {self.X: self.baseline})
         for (r, op) in zip(YR, ops):
@@ -224,21 +239,42 @@ class DeepLIFTRescale(GradientBasedMethod):
         sys.stdout.flush()
 
 
+"""
+Occlusion method
+Generalization of the grey-box method presented in https://arxiv.org/pdf/1311.2901.pdf
+This method performs a systematic perturbation of contiguous hyperpatches in the input,
+replacing each patch with a user-defined value (by default 0). 
+"""
+
+
+class Occlusion(PerturbationBasedMethod):
+
+    _deeplift_ref = {}
+
+    def __init__(self, T, X, xs, session, baseline=None):
+        super(DeepLIFTRescale, self).__init__(T, X, xs, session)
+        self.baseline = baseline
+
+    def get_symbolic_attribution(self,):
+        return tf.gradients(self.T, self.X)[0] * (self.X - self.baseline)
+
 
 attribution_methods = OrderedDict({
     'zero': (DummyZero, 0),
     'saliency': (Saliency, 1),
     'grad*input': (GradientXInput, 2),
     'intgrad': (IntegratedGradients, 3),
-    'e-lrp': (EpsilonLRP, 4),
+    'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
 })
 _ENABLED_METHOD_CLASS = None
 
+
 @ops.RegisterGradient("DeepExplainGrad")
 def deepexplain_grad(op, grad):
     global _ENABLED_METHOD_CLASS
-    if _ENABLED_METHOD_CLASS is not None:
+    if _ENABLED_METHOD_CLASS is not None \
+            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
         return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
     else:
         return original_grad(op, grad)
@@ -255,10 +291,9 @@ class DeepExplain(object):
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
 
     def get_override_map(self):
-        return {'Relu': 'DeepExplainGrad',
-                'Sigmoid': 'DeepExplainGrad',
-                'Tanh': 'DeepExplainGrad',
-                'Softplus': 'DeepExplainGrad'}
+        map = {}
+        for a in SUPPORTED_ACTIVATIONS: map[a] = 'DeepExplainGrad'
+        return map
 
     def __enter__(self):
         # Override gradient of all ops created in context
@@ -278,12 +313,21 @@ class DeepExplain(object):
         else:
             raise RuntimeError('Method must be in %s' % list(attribution_methods.keys()))
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
-
+        self._check_ops()
         method = method_class(T, X, xs, self.session, **kwargs)
         _ENABLED_METHOD_CLASS = method
         result = method.run()
         _ENABLED_METHOD_CLASS = None
         return result
+
+    @staticmethod
+    def _check_ops():
+        g = tf.get_default_graph()
+        for op in g.get_operations():
+            if len(op.inputs) > 0 and not op.name.startswith('gradients'):
+                if op.type in UNSUPPORTED_ACTIVATIONS:
+                    warnings.warn('Detected unsupported activation (%s). '
+                                  'This might lead to unexpected or wrong results.' % op.type)
 
 
 # class BaseAttributionMethod(object):
