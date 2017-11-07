@@ -32,13 +32,37 @@ Notice that DeepExplain assumes you already have installed `Tensorflow > 1.0` an
 ## Quick start
 
 Working examples for Tensorflow and Keras can be found in the `example` folder of the repository. DeepExplain
-consists of a single method: `explain(method_name, target_tensor, input_tensor, samples, args...)`.
+consists of a single method: `explain(method_name, target_tensor, input_tensor, samples, ...args)`.
 
 
 Parameter name | Type | Description
 ---------------|------|------------
-`method_name` | string, required | name of the method to run
-`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked
-`input_tensor` | Tensor, required | Tensorflow Placeholder object, used as input to the network
-`samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked
+`method_name` | string, required | Name of the method to run
+`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked. See below for how to select a good target tensor.
+`input_tensor` | Tensor, required | Tensorflow Placeholder object, used as input to the network.
+`samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
+`...args` | various, optional | Method-specific parameters (see below).
 
+The method `explain` must be called within a DeepExplain context:
+
+```python
+from deepexplain.tensorflow import DeepExplain
+
+# Option 1. Create and train your model within a DeepExplain context
+
+with DeepExplain(...) as de:  # < enter DeepExplain context
+    model = init_model()  # < construct the model
+    model.fit()           # < train the model
+
+    attributions = de.explain(...)  # < compute attributions
+
+# Option 2. First create and train your model, then apply DeepExplain.
+# IMPORTANT: in order to work correctly, the graph to analyze must always be (re)constructed within the context!
+
+model = init_model()  # < construct the model
+model.fit()           # < train the model
+
+with DeepExplain(...) as de:  # < enter DeepExplain context
+    new_model = init_model() < assumes init_model() returns a *new* model with the weights of `model`
+    attributions = de.explain(...)  # < compute attributions
+```
