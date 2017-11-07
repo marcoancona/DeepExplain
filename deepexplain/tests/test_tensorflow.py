@@ -8,6 +8,15 @@ import numpy as np
 from deepexplain.tensorflow import DeepExplain
 
 
+class ExtendedTestCase(TestCase):
+  def assertRaisesWithMessage(self, msg, func, *args, **kwargs):
+    try:
+      func(*args, **kwargs)
+      self.assertFail()
+    except Exception as inst:
+      self.assertEqual(inst.message, msg)
+
+
 def simple_model(activation, session):
     X = tf.placeholder("float", [None, 2])
     w1 = tf.Variable(initial_value=[[1.0, -1.0], [-1.0, 1.0]])
@@ -154,6 +163,7 @@ class TestDeepExplainGeneralTF(TestCase):
                 xi = [[-1, 0, 1]]
                 e = de.explain('elrp', Y, X, xi)
                 print ([wi.message for wi in w])
+
                 assert any(["unsupported activation" in str(wi.message) for wi in w])
 
     def test_override_as_default(self):
@@ -163,6 +173,24 @@ class TestDeepExplainGeneralTF(TestCase):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             r = train_xor(self.session)
             self.assertTrue(r)
+
+    def test_explain_not_in_context(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            pass
+        with self.assertRaises(RuntimeError) as cm:
+            de.explain('grad*input', None, None, None)
+            self.assertEqual(
+                'Explain can be called only within a DeepExplain context.',
+                str(cm.exception)
+            )
+
+    def test_invalid_method(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('invalid', None, None, None)
+                self.assertIn('Method must be in',
+                    str(cm.exception)
+                )
 
 
 class TestDummyMethod(TestCase):

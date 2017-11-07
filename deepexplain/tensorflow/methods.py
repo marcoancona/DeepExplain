@@ -59,11 +59,18 @@ class AttributionMethod(object):
     """
     Attribution method base class
     """
-    def __init__(self, T, X, xs, session):
+    def __init__(self, T, X, xs, session, keras_learning_phase=None):
         self.T = T
         self.X = X
         self.xs = xs
         self.session = session
+        self.keras_learning_phase = keras_learning_phase
+
+    def session_run(self, T, xs):
+        feed_dict = {self.X: xs}
+        if self.keras_learning_phase is not None:
+            feed_dict[self.keras_learning_phase] = 0
+        return self.session.run(T, feed_dict)
 
 
 class GradientBasedMethod(AttributionMethod):
@@ -75,7 +82,7 @@ class GradientBasedMethod(AttributionMethod):
 
     def run(self):
         attributions = self.get_symbolic_attribution()
-        return self.session.run(attributions, {self.X: self.xs})
+        return self.session_run(attributions, self.xs)
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -86,12 +93,12 @@ class PerturbationBasedMethod(AttributionMethod):
     """
        Base class for perturbation-based attribution methods
        """
-    def __init__(self, T, X, xs, session):
-        super(PerturbationBasedMethod, self).__init__(T, X, xs, session)
+    def __init__(self, T, X, xs, session, keras_learning_phase):
+        super(PerturbationBasedMethod, self).__init__(T, X, xs, session, keras_learning_phase)
         self.base_activation = None
 
     def _run_input(self, x):
-        return self.session.run(self.T, {self.X: x})
+        return self.session_run(self.T, x)
 
     def _run_original(self):
         return self._run_input(self.xs)
@@ -150,8 +157,8 @@ https://arxiv.org/pdf/1703.01365.pdf
 
 class IntegratedGradients(GradientBasedMethod):
 
-    def __init__(self, T, X, xs, session, steps=100, baseline=None):
-        super(IntegratedGradients, self).__init__(T, X, xs, session)
+    def __init__(self, T, X, xs, session, keras_learning_phase, steps=100, baseline=None):
+        super(IntegratedGradients, self).__init__(T, X, xs, session, keras_learning_phase)
         self.steps = steps
         self.baseline = baseline
 
@@ -166,7 +173,7 @@ class IntegratedGradients(GradientBasedMethod):
         gradient = None
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
             xs_mod = self.xs * alpha
-            _attr = self.session.run(attributions, {self.X: xs_mod})
+            _attr = self.session_run(attributions, xs_mod)
             if gradient is None: gradient = _attr
             else: gradient += _attr
         return gradient * (self.xs - self.baseline) / self.steps
@@ -181,8 +188,8 @@ http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0130140
 class EpsilonLRP(GradientBasedMethod):
     eps = None
 
-    def __init__(self, T, X, xs, session, epsilon=1e-4):
-        super(EpsilonLRP, self).__init__(T, X, xs, session)
+    def __init__(self, T, X, xs, session, keras_learning_phase, epsilon=1e-4):
+        super(EpsilonLRP, self).__init__(T, X, xs, session, keras_learning_phase)
         assert epsilon > 0.0, 'LRP epsilon must be greater than zero'
         global eps
         eps = epsilon
@@ -208,8 +215,8 @@ class DeepLIFTRescale(GradientBasedMethod):
 
     _deeplift_ref = {}
 
-    def __init__(self, T, X, xs, session, baseline=None):
-        super(DeepLIFTRescale, self).__init__(T, X, xs, session)
+    def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
+        super(DeepLIFTRescale, self).__init__(T, X, xs, session, keras_learning_phase)
         self.baseline = baseline
 
     def get_symbolic_attribution(self,):
@@ -251,7 +258,7 @@ class DeepLIFTRescale(GradientBasedMethod):
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
                 if op.type in SUPPORTED_ACTIVATIONS:
                     ops.append(op)
-        YR = self.session.run([o.inputs[0] for o in ops], {self.X: self.baseline})
+        YR = self.session_run([o.inputs[0] for o in ops], self.baseline)
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
         #print('DeepLIFT: references ready')
@@ -276,8 +283,8 @@ If integer is given, then the step is uniform in all dimensions.
 
 class Occlusion(PerturbationBasedMethod):
 
-    def __init__(self, T, X, xs, session, window_shape=None, step=None):
-        super(Occlusion, self).__init__(T, X, xs, session)
+    def __init__(self, T, X, xs, session, keras_learning_phase, window_shape=None, step=None):
+        super(Occlusion, self).__init__(T, X, xs, session, keras_learning_phase)
         input_shape = xs[0].shape
         if window_shape is not None:
             assert len(window_shape) == len(input_shape), \
@@ -364,6 +371,8 @@ class DeepExplain(object):
         self.session = session
         self.graph_context = self.graph.as_default()
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
+        self.keras_phase_placeholder = None
+        self.context_on = False
         if self.session is None:
             raise RuntimeError('DeepExplain: could not retrieve a session. Use DeepExplain(session=your_session).')
 
@@ -371,13 +380,17 @@ class DeepExplain(object):
         # Override gradient of all ops created in context
         self.graph_context.__enter__()
         self.override_context.__enter__()
+        self.context_on = True
         return self
 
     def __exit__(self, type, value, traceback):
         self.graph_context.__exit__(type, value, traceback)
         self.override_context.__exit__(type, value, traceback)
+        self.context_on = False
 
     def explain(self, method, T, X, xs, **kwargs):
+        if not self.context_on:
+            raise RuntimeError('Explain can be called only within a DeepExplain context.')
         global _ENABLED_METHOD_CLASS
         self.method = method
         if self.method in attribution_methods:
@@ -387,23 +400,32 @@ class DeepExplain(object):
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
         self._check_ops()
         _ENABLED_METHOD_CLASS = method_class
-        method = _ENABLED_METHOD_CLASS(T, X, xs, self.session, **kwargs)
+        method = _ENABLED_METHOD_CLASS(T, X, xs, self.session, self.keras_phase_placeholder, **kwargs)
         result = method.run()
         _ENABLED_METHOD_CLASS = None
+        self.keras_phase_placeholder = None
         return result
 
     @staticmethod
     def get_override_map():
         return dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
 
-    @staticmethod
-    def _check_ops():
+    def _check_ops(self):
+        """
+        Heuristically check if any op is in the list of unsupported activation functions.
+        This does not cover all cases where explanation methods would fail, and must be improved in the future.
+        Also, check if the placeholder named 'keras_learning_phase' exists in the graph. This is used by Keras
+         and needs to be passed in feed_dict.
+        :return:
+        """
         g = tf.get_default_graph()
         for op in g.get_operations():
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
                 if op.type in UNSUPPORTED_ACTIVATIONS:
                     warnings.warn('Detected unsupported activation (%s). '
                                   'This might lead to unexpected or wrong results.' % op.type)
+            elif 'keras_learning_phase' in op.name:
+                self.keras_phase_placeholder = op.outputs[0]
 
 
 
