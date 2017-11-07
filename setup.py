@@ -9,9 +9,14 @@ setup(name='deepexplain',
       license='MIT',
       packages=['deepexplain'],
       install_requires=[
-          'numpy>=1.12.1',
-          'termcolor'
+            'scipy',
+            'matplotlib',
+            'scikit-image'
       ],
+      extras_require={
+            "tf": ["tensorflow>=1.0.0"],
+            "tf_gpu": ["tensorflow-gpu>=1.0.0"],
+      },
       zip_safe=False,
       test_suite='nose.collector',
       tests_require=['nose'],
