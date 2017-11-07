@@ -19,6 +19,9 @@ UNSUPPORTED_ACTIVATIONS = [
     'CRelu', 'Relu6', 'Softsign'
 ]
 
+_ENABLED_METHOD_CLASS = None
+_GRAD_OVERRIDE_CHECKFLAG = 0
+
 
 # -----------------------------------------------------------------------------
 # UTILITY FUNCTIONS
@@ -349,12 +352,13 @@ attribution_methods = OrderedDict({
     'deeplift': (DeepLIFTRescale, 5),
     'occlusion': (Occlusion, 6)
 })
-_ENABLED_METHOD_CLASS = None
+
 
 
 @ops.RegisterGradient("DeepExplainGrad")
 def deepexplain_grad(op, grad):
-    global _ENABLED_METHOD_CLASS
+    global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
+    _GRAD_OVERRIDE_CHECKFLAG = 1
     if _ENABLED_METHOD_CLASS is not None \
             and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
         return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
@@ -391,7 +395,7 @@ class DeepExplain(object):
     def explain(self, method, T, X, xs, **kwargs):
         if not self.context_on:
             raise RuntimeError('Explain can be called only within a DeepExplain context.')
-        global _ENABLED_METHOD_CLASS
+        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
         self.method = method
         if self.method in attribution_methods:
             method_class, method_flag = attribution_methods[self.method]
@@ -399,10 +403,17 @@ class DeepExplain(object):
             raise RuntimeError('Method must be in %s' % list(attribution_methods.keys()))
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
         self._check_ops()
+        _GRAD_OVERRIDE_CHECKFLAG = 0
+
         _ENABLED_METHOD_CLASS = method_class
         method = _ENABLED_METHOD_CLASS(T, X, xs, self.session, self.keras_phase_placeholder, **kwargs)
         result = method.run()
+        if issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod) and _GRAD_OVERRIDE_CHECKFLAG == 0:
+            warnings.warn('DeepExplain detected you are trying to use an attribution method that requires '
+                          'gradient override but the original gradient was used instead. You might have forgot to '
+                          '(re)create your graph within the DeepExlain context. Results are not reliable!')
         _ENABLED_METHOD_CLASS = None
+        _GRAD_OVERRIDE_CHECKFLAG = 0
         self.keras_phase_placeholder = None
         return result
 

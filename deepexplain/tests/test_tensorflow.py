@@ -161,9 +161,7 @@ class TestDeepExplainGeneralTF(TestCase):
                 X = tf.placeholder("float", [None, 3])
                 Y = tf.nn.relu6(X)  # < an unsupported activation
                 xi = [[-1, 0, 1]]
-                e = de.explain('elrp', Y, X, xi)
-                print ([wi.message for wi in w])
-
+                de.explain('elrp', Y, X, xi)
                 assert any(["unsupported activation" in str(wi.message) for wi in w])
 
     def test_override_as_default(self):
@@ -191,6 +189,17 @@ class TestDeepExplainGeneralTF(TestCase):
                 self.assertIn('Method must be in',
                     str(cm.exception)
                 )
+
+    def test_gradient_was_not_overridden(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                de.explain('grad*input', Y, X, [[0, 0, 0]])
+                assert any(["DeepExplain detected you are trying" in str(wi.message) for wi in w])
+
+
 
 
 class TestDummyMethod(TestCase):

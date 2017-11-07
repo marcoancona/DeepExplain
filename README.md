@@ -57,12 +57,13 @@ with DeepExplain(...) as de:  # < enter DeepExplain context
     attributions = de.explain(...)  # < compute attributions
 
 # Option 2. First create and train your model, then apply DeepExplain.
-# IMPORTANT: in order to work correctly, the graph to analyze must always be (re)constructed within the context!
+# IMPORTANT: in order to work correctly, the graph to analyze
+# must always be (re)constructed within the context!
 
 model = init_model()  # < construct the model
 model.fit()           # < train the model
 
 with DeepExplain(...) as de:  # < enter DeepExplain context
-    new_model = init_model() < assumes init_model() returns a *new* model with the weights of `model`
+    new_model = init_model()  # < assumes init_model() returns a *new* model with the weights of `model`
     attributions = de.explain(...)  # < compute attributions
 ```
