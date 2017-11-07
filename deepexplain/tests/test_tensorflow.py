@@ -1,20 +1,11 @@
 from unittest import TestCase
 import pkg_resources
-import logging, os, warnings
+import logging, warnings
 import tensorflow as tf
 import numpy as np
 
 
 from deepexplain.tensorflow import DeepExplain
-
-
-class ExtendedTestCase(TestCase):
-  def assertRaisesWithMessage(self, msg, func, *args, **kwargs):
-    try:
-      func(*args, **kwargs)
-      self.assertFail()
-    except Exception as inst:
-      self.assertEqual(inst.message, msg)
 
 
 def simple_model(activation, session):

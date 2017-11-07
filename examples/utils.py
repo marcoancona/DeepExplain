@@ -1,5 +1,4 @@
 from skimage import feature, transform
-import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 
