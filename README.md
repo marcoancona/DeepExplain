@@ -1,4 +1,4 @@
-DeepExplain: attribution methods for Deep Neural Networks
+DeepExplain: attribution methods for Deep Learning
 ===
 DeepExplain provides a unified framework for state-of-the-art gradient *and* perturbation-based attribution methods.
 It can be used by practitioners to better undertand the behavior of existing models, as well as by researches for
