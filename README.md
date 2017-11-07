@@ -18,9 +18,27 @@ Implements the following methods:
 Methods marked with (*) are implemented as modified chain-rule, as better explained in []()
 
 **Pertubration-based attribution methods**
-- **Occlusion**, as an extension of the [grey-box method by Zeiler *et al*](https://arxiv.org/abs/1311.2901).
+- [**Occlusion**](https://arxiv.org/abs/1311.2901), as an extension
+of the [grey-box method by Zeiler *et al*](https://arxiv.org/abs/1311.2901).
+
 
 ## Installation
 ```unix
-
+pip install -e git+https://github.com/marcoancona/DeepExplain.git
 ```
+
+Notice that DeepExplain assumes you already have installed `Tensorflow > 1.0` and (optionally) `Keras > 2.0`.
+
+## Quick start
+
+Working examples for Tensorflow and Keras can be found in the `example` folder of the repository. DeepExplain
+consists of a single method: `explain(method_name, target_tensor, input_tensor, samples, args...)`.
+
+
+Parameter name | Type | Description
+---------------|------|------------
+`method_name` | string, required | name of the method to run
+`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked
+`input_tensor` | Tensor, required | Tensorflow Placeholder object, used as input to the network
+`samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked
+
