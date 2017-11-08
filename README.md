@@ -14,7 +14,7 @@ Implements the following methods:
 - [**DeepLIFT**](https://arxiv.org/abs/1704.02685), in its first variant with Rescale rule (*)
 - [**ε-LRP**](http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0130140) (*)
 
-Methods marked with (*) are implemented as modified chain-rule, as better explained in []()
+Methods marked with (*) are implemented as modified chain-rule, as better explained in []. As such, the result might be slightly different from the original implementation.
 
 **Pertubration-based attribution methods**
 - [**Occlusion**](https://arxiv.org/abs/1311.2901), as an extension
