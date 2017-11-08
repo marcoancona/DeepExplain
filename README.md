@@ -112,6 +112,12 @@ Method | `method_name` | Optional parameters | Notes
 Saliency | `saliency` |  | [*Gradient*] Only positive attributions.
 Gradient * Input | `grad*input` |  | [*Gradient*] Fast. May be affected by noisy gradients and saturation of the nonlinerities.
 Integrated Gradients | `intgrad` |`steps`, `baseline` | [*Gradient*] Similar to Gradient * Input, but performs `steps` iterations (default: 100) though the network, varying the input from `baseline` (default: zero) to the actual provided sample. When provided, `baseline` must be a numpy array with the size of the input (but no batch dimension since the same baseline will be used for all inputs in the batch).
-epsilon-LRP | `elrp` | `epsilon` | [*Gradient*]Computes Layer-wise Relevance Distribution. Only recommanded with ReLU or Tanh nonlinearities. Value for `epsilon` must be greater than zero (default: .0001).
+epsilon-LRP | `elrp` | `epsilon` | [*Gradient*]Computes Layer-wise Relevance Propagation. Only recommanded with ReLU or Tanh nonlinearities. Value for `epsilon` must be greater than zero (default: .0001).
 DeepLIFT (Rescale) | `deeplift` | `baseline` |  [*Gradient*] In most cases a faster approximation of Integrated Gradients. Do not apply to networks with multiplicative units (ie. LSTM or GRU). When provided, `baseline` must be a numpy array with the size of the input, without the batch dimension (default: zero).
 Occlusion | `occlusion` | `window_shape`, `step` | [*Perturbation*] Computes rolling window view of the input array and replace each window with zero values, measuring the effect of the perturbation on the target output. The optional parameters `window_shape` and `step` behave like in [skimage](http://scikit-image.org/docs/dev/api/skimage.util.html#skimage.util.view_as_windows). By default, each feature is tested independently (`window_shape=1` and `step=1`), however this might be extremely slow for large inputs (such as ImageNet images). When the input presents some local coherence (eg. images), you might prefer larger values for `window_shape`. In this case the attributions of the features in each window will be summed up. Notice that the result might vary significantly for different window sizes.
+
+## Contributing
+DeepExplain is still in active development. If you experience problems, feel free to open an issue. Contributions to extend the functinalities of this framework and/or to add support for other methods are welcome. 
+
+## License
+MIT
