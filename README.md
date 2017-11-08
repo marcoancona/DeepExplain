@@ -21,7 +21,17 @@ Methods marked with (*) are implemented as modified chain-rule, as better explai
 - [**Occlusion**](https://arxiv.org/abs/1311.2901), as an extension
 of the [grey-box method by Zeiler *et al*](https://arxiv.org/abs/1311.2901).
 
+## What are attributions?
+Consider a network and a specific input to this network (eg. an image, if the network is trained for image classification). The input is multi-dimensional, made of several features. In the case of images, each pixel can be considered a feature. The goal of an attribution method is to determine a real value `R(x_i)` for each input feature, with respect to a target neuron of interest (for example, the activation of the neuron corresponsing to the correct class). 
 
+When the attributions of all input features are arranged together to have the same shape of the input sample we talk about *attribution maps* (as in the picture below), where red and blue colors indicate respectively features that contribute positively to the activation of the target output and features having a suppressing effect on it.
+![Attribution methods comparison on InceptionV3](https://github.com/marcoancona/DeepExplain/blob/master/docs/comparison.png)
+
+This can help to better understand the network behavior, which features mostly contribute to the output and possible reasons for missclassification.
+
+
+DeepExplain Quickstart
+===
 ## Installation
 ```unix
 pip install -e git+https://github.com/marcoancona/DeepExplain.git
@@ -29,7 +39,7 @@ pip install -e git+https://github.com/marcoancona/DeepExplain.git
 
 Notice that DeepExplain assumes you already have installed `Tensorflow > 1.0` and (optionally) `Keras > 2.0`.
 
-## Quick start
+## Usage
 
 Working examples for Tensorflow and Keras can be found in the `example` folder of the repository. DeepExplain
 consists of a single method: `explain(method_name, target_tensor, input_tensor, samples, ...args)`.
@@ -37,7 +47,7 @@ consists of a single method: `explain(method_name, target_tensor, input_tensor, 
 
 Parameter name | Type | Description
 ---------------|------|------------
-`method_name` | string, required | Name of the method to run
+`method_name` | string, required | Name of the method to run (see next section).
 `target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked. See below for how to select a good target tensor.
 `input_tensor` | Tensor, required | Tensorflow Placeholder object, used as input to the network.
 `samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
@@ -46,11 +56,12 @@ Parameter name | Type | Description
 The method `explain` must be called within a DeepExplain context:
 
 ```python
+# Pseudo-code
 from deepexplain.tensorflow import DeepExplain
 
 # Option 1. Create and train your model within a DeepExplain context
 
-with DeepExplain(...) as de:  # < enter DeepExplain context
+with DeepExplain(session=...) as de:  # < enter DeepExplain context
     model = init_model()  # < construct the model
     model.fit()           # < train the model
 
@@ -63,7 +74,43 @@ with DeepExplain(...) as de:  # < enter DeepExplain context
 model = init_model()  # < construct the model
 model.fit()           # < train the model
 
-with DeepExplain(...) as de:  # < enter DeepExplain context
+with DeepExplain(session=...) as de:  # < enter DeepExplain context
     new_model = init_model()  # < assumes init_model() returns a *new* model with the weights of `model`
     attributions = de.explain(...)  # < compute attributions
 ```
+
+When initializing the context, make sure to pass the `session` parameter:
+
+```python
+# With Tensorlow
+import tensorflow as tf
+# ...build model
+sess = tf.Session()
+# ... use session to train your model if necessary
+with DeepExplain(session=sess) as de:
+    ...
+
+# With Keras
+import keras
+from keras import backend as K
+
+model = Sequential()  # functional API is also supported
+# ... build model and train
+
+with DeepExplain(session=K.get_session()) as de:
+    ...
+```
+
+See concrete examples [here](https://github.com/marcoancona/DeepExplain/tree/master/examples).
+
+## Which method to use?
+DeepExplain supports several methods. The main partition is between *gradient-based methods* and *perturbation-based methods*. The former are faster, given that they estimate attributions with a few forward and backward iterations through the network. The latter perturb the input and measure the change in output with respect to the original input. This requires to sequentially test each feature (or group of features) and therefore takes more time, but tends to produce smoother results.
+
+Some methods allow tunable parameters. See the table below.
+
+
+
+
+
+    
+
