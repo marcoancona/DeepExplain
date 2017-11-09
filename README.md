@@ -46,9 +46,9 @@ consists of a single method: `explain(method_name, target_tensor, input_tensor, 
 
 Parameter name | Type | Description
 ---------------|------|------------
-`method_name` | string, required | Name of the method to run (see next section).
-`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked. See below for how to select a good target tensor.
-`input_tensor` | Tensor, required | Tensorflow Placeholder object, used as input to the network.
+`method_name` | string, required | Name of the method to run (see [Which method to use?](#which-method-to-use)).
+`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked. See below for how to select a good target tensor (see [Which tensor to target?](#which-neuron-to-target)).
+`input_tensor` | Tensor, required | Symbolic input to the network.
 `samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
 `...args` | various, optional | Method-specific parameters (see below).
 
@@ -115,6 +115,21 @@ Integrated Gradients | `intgrad` |`steps`, `baseline` | [*Gradient*] Similar to 
 epsilon-LRP | `elrp` | `epsilon` | [*Gradient*]Computes Layer-wise Relevance Propagation. Only recommanded with ReLU or Tanh nonlinearities. Value for `epsilon` must be greater than zero (default: .0001).
 DeepLIFT (Rescale) | `deeplift` | `baseline` |  [*Gradient*] In most cases a faster approximation of Integrated Gradients. Do not apply to networks with multiplicative units (ie. LSTM or GRU). When provided, `baseline` must be a numpy array with the size of the input, without the batch dimension (default: zero).
 Occlusion | `occlusion` | `window_shape`, `step` | [*Perturbation*] Computes rolling window view of the input array and replace each window with zero values, measuring the effect of the perturbation on the target output. The optional parameters `window_shape` and `step` behave like in [skimage](http://scikit-image.org/docs/dev/api/skimage.util.html#skimage.util.view_as_windows). By default, each feature is tested independently (`window_shape=1` and `step=1`), however this might be extremely slow for large inputs (such as ImageNet images). When the input presents some local coherence (eg. images), you might prefer larger values for `window_shape`. In this case the attributions of the features in each window will be summed up. Notice that the result might vary significantly for different window sizes.
+
+## Which neuron to target?
+In general, any tensor that represents the activation of any hidden or output neuron can be user as `target_tensor`. If your network performs a classification task (ie. one output neuron for each possible class) you might want to target the neuron corresponding to the *correct class* for a given sample, such that the attribution map might help you undertand the reasons for this neuron to (not) activate. However you can also target the activation of another class, for example a class that is often missclassified, to have insight about features that activate this class.
+
+**Important**: Tensors in Tensorflow and Keras usually include the activations of *all* neurons of a layer. If you pass such a tensor to `explain` you will get the *average* attribution map for all neurons the Tensor refers to. If you want to target a specific neuron yuo need either to slice the component you are interested in or multiply it for a binary mask that only select the target neuron.
+
+```python
+# Example on MNIST (classification, with 10 output classes)
+# ... model is created and trained
+logits = Tensor(shape=(1, 10)) # output layer, 2-dimensional Tensor, where first dimension is the batch size
+ys = [[0, 1, 0, 0, 0, 0, 0, 0, 0, 0]]  # numpy array of shape (1, 10) with one-hot encoding of labels
+target_tensor = logits * ys # < masked target tensor: only the second component of `logits` will be used to compute attributions
+```
+
+**Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* the activation. 
 
 ## Contributing
 DeepExplain is still in active development. If you experience problems, feel free to open an issue. Contributions to extend the functinalities of this framework and/or to add support for other methods are welcome. 
