@@ -47,7 +47,7 @@ consists of a single method: `explain(method_name, target_tensor, input_tensor, 
 Parameter name | Type | Description
 ---------------|------|------------
 `method_name` | string, required | Name of the method to run (see [Which method to use?](#which-method-to-use)).
-`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked. See below for how to select a good target tensor (see [Which tensor to target?](#which-neuron-to-target)).
+`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked (see [Which tensor to target?](#which-neuron-to-target)).
 `input_tensor` | Tensor, required | Symbolic input to the network.
 `samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
 `...args` | various, optional | Method-specific parameters (see below).
