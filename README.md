@@ -129,7 +129,7 @@ ys = [[0, 1, 0, 0, 0, 0, 0, 0, 0, 0]]  # numpy array of shape (1, 10) with one-h
 target_tensor = logits * ys # < masked target tensor: only the second component of `logits` will be used to compute attributions
 ```
 
-**Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* the activation. 
+**Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* this normalization. 
 
 ## Contributing
 DeepExplain is still in active development. If you experience problems, feel free to open an issue. Contributions to extend the functinalities of this framework and/or to add support for other methods are welcome. 
