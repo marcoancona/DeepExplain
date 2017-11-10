@@ -130,7 +130,7 @@ class TestDeepExplainGeneralTF(TestCase):
             xi = [[-1, 0, 1]]
             Y = tf.nn.relu(X)
             r = self.session.run(Y, {X: xi})
-            np.testing.assert_almost_equal(r[0], [0, 0, 2], 7)
+            np.testing.assert_almost_equal(r[0], [0, 0, 1], 7)
             Y = tf.nn.elu(X)
             r = self.session.run(Y, {X: xi})
             np.testing.assert_almost_equal(r[0], [-0.632120558, 0, 1], 7)
