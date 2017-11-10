@@ -1,4 +1,5 @@
 DeepExplain: attribution methods for Deep Learning
+[![Build Status](https://travis-ci.org/marcoancona/DeepExplain.svg?branch=master)](https://travis-ci.org/marcoancona/DeepExplain)
 ===
 DeepExplain provides a unified framework for state-of-the-art gradient *and* perturbation-based attribution methods.
 It can be used by researchers and practitioners for better undertanding the behavior of existing models, as well for benchmarking other attribution methods.
