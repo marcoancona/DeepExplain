@@ -1,0 +1,17 @@
+language: python
+matrix:
+    include:
+        - python: 2.7
+          env: KERAS_BACKEND=tensorflow
+        - python: 3.6
+          env: KERAS_BACKEND=tensorflow
+
+install:
+  # install TensorFlow (CPU version).
+  - pip install tensorflow
+  - pip install keras
+  - pip install -e .[tests]
+
+# command to run tests
+script:
+  nosetests --nologcapture
