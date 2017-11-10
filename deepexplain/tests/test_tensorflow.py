@@ -30,7 +30,6 @@ def simpler_model(session):
     w1 = tf.Variable(initial_value=[[1.0, 0.0], [0.0, 1.0]], trainable=False)
     b1 = tf.Variable(initial_value=[-1.0, 0], trainable=False)
     w2 = tf.Variable(initial_value=[[1.0], [-1.0]], trainable=False)
-    logging.critical (w2)
 
     l1 = tf.nn.relu(tf.matmul(X, w1) + b1)
     out = tf.nn.relu(tf.matmul(l1, w2))
@@ -131,7 +130,7 @@ class TestDeepExplainGeneralTF(TestCase):
             xi = [[-1, 0, 1]]
             Y = tf.nn.relu(X)
             r = self.session.run(Y, {X: xi})
-            np.testing.assert_almost_equal(r[0], [0, 0, 1], 7)
+            np.testing.assert_almost_equal(r[0], [0, 0, 2], 7)
             Y = tf.nn.elu(X)
             r = self.session.run(Y, {X: xi})
             np.testing.assert_almost_equal(r[0], [-0.632120558, 0, 1], 7)
