@@ -4,8 +4,13 @@ import logging, warnings
 import tensorflow as tf
 import numpy as np
 
-
 from deepexplain.tensorflow import DeepExplain
+from deepexplain.tensorflow.methods import original_grad # test only
+
+activations = {'Relu': tf.nn.relu,
+                'Sigmoid': tf.nn.sigmoid,
+                'Softplus': tf.nn.softplus,
+                'Tanh': tf.nn.tanh}
 
 
 def simple_model(activation, session):
@@ -108,10 +113,6 @@ class TestDeepExplainGeneralTF(TestCase):
         from deepexplain.tensorflow import DeepExplain
 
         X = tf.placeholder("float", [None, 1])
-        activations = {'Relu': tf.nn.relu,
-                       'Sigmoid': tf.nn.sigmoid,
-                       'Softplus': tf.nn.softplus,
-                       'Tanh': tf.nn.tanh}
         for name in activations:
             x1 = activations[name](X)
             x1_g = tf.gradients(x1, X)[0]
@@ -143,6 +144,14 @@ class TestDeepExplainGeneralTF(TestCase):
             Y = tf.nn.softplus(X)
             r = self.session.run(Y, {X: xi})
             np.testing.assert_almost_equal(r[0], [0.313261687, 0.693147181, 1.31326168], 7)
+
+    def test_original_grad(self):
+        X = tf.placeholder("float", [None, 3])
+        for name in activations:
+            Y = activations[name](X)
+            grad = original_grad(Y.op, tf.ones_like(X))
+            self.assertTrue('Tensor' in str(type(grad)))
+
 
     def test_warning_unsupported_activations(self):
         with warnings.catch_warnings(record=True) as w:
@@ -246,7 +255,7 @@ class TestGradInputMethod(TestCase):
 
     def test_saliency_method(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
-            X, out = simpler_model( self.session)
+            X, out = simpler_model(self.session)
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('grad*input', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)

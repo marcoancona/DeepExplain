@@ -8,7 +8,7 @@ from skimage.util import view_as_windows
 import warnings
 import tensorflow as tf
 from tensorflow.python.framework import ops
-from tensorflow.python.ops import nn_grad
+from tensorflow.python.ops import nn_grad, math_grad
 from collections import OrderedDict
 
 SUPPORTED_ACTIVATIONS = [
@@ -49,7 +49,11 @@ def original_grad(op, grad):
     """
     if op.type not in SUPPORTED_ACTIVATIONS:
         warnings.warn('Activation function (%s) not supported' % op.type)
-    f = getattr(nn_grad, '_%sGrad' % op.type)
+    opname = '_%sGrad' % op.type
+    if hasattr(nn_grad, opname):
+        f = getattr(nn_grad, opname)
+    else:
+        f = getattr(math_grad, opname)
     return f(op, grad)
 
 
