@@ -372,11 +372,11 @@ def deepexplain_grad(op, grad):
 
 class DeepExplain(object):
 
-    def __init__(self, graph=tf.get_default_graph(), session=tf.get_default_session()):
+    def __init__(self, graph=None, session=tf.get_default_session()):
         self.method = None
         self.batch_size = None
-        self.graph = graph
         self.session = session
+        self.graph = session.graph if graph is None else graph
         self.graph_context = self.graph.as_default()
         self.override_context = self.graph.gradient_override_map(self.get_override_map())
         self.keras_phase_placeholder = None
