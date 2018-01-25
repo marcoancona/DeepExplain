@@ -132,6 +132,22 @@ target_tensor = logits * ys # < masked target tensor: only the second component 
 
 **Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* this normalization. 
 
+### NLP / Embedding lookups
+The most common cause of `ValueError("None values not supported.")` is that `run()` is called with a `tensor_input` and `target_tensor` that are disconnected in the backpropagation. For example, this is common when an embedding lookup is used, since the lookup does not propagate the gradient. To generate attribution of NLP models, the input for DeepExplain should be the embedding itself instead of the original model input. Then, the attributions of each word are found by summing up along the appropriate dimension of the resulting attribution matrix.
+
+Here is the idea in Tensorflow:
+```python
+input_x = graph.get_operation_by_name("input_x").outputs[0]
+# Get a reference to the embedding tensor
+embedding = graph.get_operation_by_name("embedding").outputs[0]
+pre_softmax = graph.get_operation_by_name("output/scores").outputs[0]
+
+# Evaluate the embedding tensor on the model input (in other words, perform the lookup)
+embedding_out = sess.run(embedding, {input_x: x_test})
+# Run DeepExplain with the embedding as input
+attributions = de.explain('elrp', pre_softmax * y_test_logits, embedding, embedding_out)
+```
+
 ## Contributing
 DeepExplain is still in active development. If you experience problems, feel free to open an issue. Contributions to extend the functinalities of this framework and/or to add support for other methods are welcome. 
 
