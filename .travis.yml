@@ -8,9 +8,10 @@ matrix:
 
 install:
   # install TensorFlow (CPU version).
-  - pip install tensorflow
-  - pip install keras
-  - pip install -e .[tests]
+  - pip install numpy --upgrade
+  - pip install tensorflow --upgrade
+  - pip install keras --upgrade
+  - pip install -e .
 
 # command to run tests
 script:
