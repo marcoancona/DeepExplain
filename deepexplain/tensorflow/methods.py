@@ -72,12 +72,44 @@ class AttributionMethod(object):
         self.xs = xs
         self.session = session
         self.keras_learning_phase = keras_learning_phase
+        self.has_multiple_inputs = type(self.X) is list or type(self.X) is tuple
 
     def session_run(self, T, xs):
-        feed_dict = {self.X: xs}
+        feed_dict = {}
+        if self.has_multiple_inputs:
+            if len(xs) != len(self.X):
+                raise RuntimeError('List of input tensors and input data have different lengths (%s and %s)'
+                                   % (str(len(xs)), str(len(self.X))))
+            for k, v in zip(self.X, xs):
+                feed_dict[k] = v
+        else:
+            feed_dict = {self.X: xs}
+
         if self.keras_learning_phase is not None:
             feed_dict[self.keras_learning_phase] = 0
         return self.session.run(T, feed_dict)
+
+    def _set_check_baseline(self):
+        if self.baseline is None:
+            if self.has_multiple_inputs:
+                self.baseline = [np.zeros((1,) + xi.shape[1:]) for xi in self.xs]
+            else:
+                self.baseline = np.zeros((1,) + self.xs.shape[1:])
+
+        else:
+            if self.has_multiple_inputs:
+                for i, xi in enumerate(self.xs):
+                    if self.baseline[i].shape == self.xs[i].shape[1:]:
+                        self.baseline[i] = np.expand_dims(self.baseline[i], 0)
+                    else:
+                        raise RuntimeError('Baseline shape %s does not match expected shape %s'
+                                           % (self.baseline[i].shape, self.xs[i].shape[1:]))
+            else:
+                if self.baseline.shape == self.xs.shape[1:]:
+                    self.baseline = np.expand_dims(self.baseline, 0)
+                else:
+                    raise RuntimeError('Baseline shape %s does not match expected shape %s'
+                                       % (self.baseline.shape, self.xs.shape[1:]))
 
 
 class GradientBasedMethod(AttributionMethod):
@@ -85,11 +117,12 @@ class GradientBasedMethod(AttributionMethod):
     Base class for gradient-based attribution methods
     """
     def get_symbolic_attribution(self):
-        return tf.gradients(self.T, self.X)[0]
+        return tf.gradients(self.T, self.X)
 
     def run(self):
         attributions = self.get_symbolic_attribution()
-        return self.session_run(attributions, self.xs)
+        results =  self.session_run(attributions, self.xs)
+        return results[0] if not self.has_multiple_inputs else results
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -125,7 +158,7 @@ Returns zero attributions. For testing only.
 class DummyZero(GradientBasedMethod):
 
     def get_symbolic_attribution(self,):
-        return tf.gradients(self.T, self.X)[0]
+        return tf.gradients(self.T, self.X)
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -141,7 +174,7 @@ https://arxiv.org/abs/1312.6034
 class Saliency(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
-        return tf.abs(tf.gradients(self.T, self.X)[0])
+        return [tf.abs(g) for g in tf.gradients(self.T, self.X)]
 
 
 """
@@ -153,7 +186,9 @@ https://arxiv.org/pdf/1704.02685.pdf - https://arxiv.org/abs/1611.07270
 class GradientXInput(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
-        return tf.gradients(self.T, self.X)[0] * self.X
+        return [g * x for g, x in zip(
+            tf.gradients(self.T, self.X),
+            self.X if self.has_multiple_inputs else [self.X])]
 
 
 """
@@ -170,20 +205,18 @@ class IntegratedGradients(GradientBasedMethod):
         self.baseline = baseline
 
     def run(self):
-        if self.baseline is None: self.baseline = np.zeros((1,)+self.xs.shape[1:])
-        elif self.baseline.shape == self.xs.shape[1:]:
-            self.baseline = np.expand_dims(self.baseline, 0)
-        else:
-            raise RuntimeError('Baseline shape %s does not match expected shape %s'
-                               % (self.baseline.shape, self.xs.shape[1:]))
+        # Check user baseline or set default one
+        self._set_check_baseline()
+
         attributions = self.get_symbolic_attribution()
         gradient = None
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
-            xs_mod = self.xs * alpha
+            xs_mod = (np.array(self.xs) * alpha).tolist()
             _attr = self.session_run(attributions, xs_mod)
-            if gradient is None: gradient = _attr
-            else: gradient += _attr
-        return gradient * (self.xs - self.baseline) / self.steps
+            if gradient is None: gradient = np.array(_attr)
+            else: gradient += np.array(_attr)
+        results = gradient * (np.array(self.xs) - np.array(self.baseline)) / self.steps
+        return results[0] if not self.has_multiple_inputs else results
 
 
 """
@@ -202,7 +235,9 @@ class EpsilonLRP(GradientBasedMethod):
         eps = epsilon
 
     def get_symbolic_attribution(self):
-        return tf.gradients(self.T, self.X)[0] * self.X
+        return [g * x for g, x in zip(
+            tf.gradients(self.T, self.X),
+            self.X if self.has_multiple_inputs else [self.X])]
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -226,8 +261,11 @@ class DeepLIFTRescale(GradientBasedMethod):
         super(DeepLIFTRescale, self).__init__(T, X, xs, session, keras_learning_phase)
         self.baseline = baseline
 
-    def get_symbolic_attribution(self,):
-        return tf.gradients(self.T, self.X)[0] * (self.X - self.baseline)
+    def get_symbolic_attribution(self):
+        return [g * (x - b) for g, x, b in zip(
+            tf.gradients(self.T, self.X),
+            self.X if self.has_multiple_inputs else [self.X],
+            self.baseline if self.has_multiple_inputs else [self.baseline])]
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -242,12 +280,8 @@ class DeepLIFTRescale(GradientBasedMethod):
                                original_grad(instant_grad.op, grad))
 
     def run(self):
-        if self.baseline is None: self.baseline = np.zeros((1,)+self.xs.shape[1:])
-        elif self.baseline.shape == self.xs.shape[1:]:
-            self.baseline = np.expand_dims(self.baseline, 0)
-        else:
-            raise RuntimeError('Baseline shape %s does not match expected shape %s'
-                               % (self.baseline.shape, self.xs.shape[1:]))
+        # Check user baseline or set default one
+        self._set_check_baseline()
 
         # Init references with a forward pass
         self._init_references()
@@ -256,7 +290,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         return super(DeepLIFTRescale, self).run()
 
     def _init_references(self):
-        #print ('DeepLIFT: computing references...')
+        # print ('DeepLIFT: computing references...')
         sys.stdout.flush()
         self._deeplift_ref.clear()
         ops = []
@@ -268,7 +302,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         YR = self.session_run([o.inputs[0] for o in ops], self.baseline)
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
-        #print('DeepLIFT: references ready')
+        # print('DeepLIFT: references ready')
         sys.stdout.flush()
 
 
@@ -292,6 +326,9 @@ class Occlusion(PerturbationBasedMethod):
 
     def __init__(self, T, X, xs, session, keras_learning_phase, window_shape=None, step=None):
         super(Occlusion, self).__init__(T, X, xs, session, keras_learning_phase)
+        if self.has_multiple_inputs:
+            raise RuntimeError('Multiple inputs not yet supported for perturbation methods')
+
         input_shape = xs[0].shape
         if window_shape is not None:
             assert len(window_shape) == len(input_shape), \

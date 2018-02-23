@@ -42,6 +42,21 @@ def simpler_model(session):
     return X, out
 
 
+def simple_multi_inputs_model(session):
+    """
+    Implements Relu (3*x1|2*x2) | is a concat op
+    :
+    """
+    X1 = tf.placeholder("float", [None, 2])
+    X2 = tf.placeholder("float", [None, 2])
+    w1 = tf.Variable(initial_value=[[3.0, 0.0], [0.0, 3.0]], trainable=False)
+    w2 = tf.Variable(initial_value=[[2.0, 0.0], [0.0, 2.0]], trainable=False)
+
+    out = tf.nn.relu(tf.concat([X1*w1, X2*w2], 1))
+    session.run(tf.global_variables_initializer())
+    return X1, X2, out
+
+
 def train_xor(session):
     # Since setting seed is not always working on TF, initial weights values are hardcoded for reproducibility
     X = tf.placeholder("float", [None, 2])
@@ -125,6 +140,36 @@ class TestDeepExplainGeneralTF(TestCase):
                 x2 = activations[name](X)
                 self.assertEqual(x2.op.get_attr('_gradient_op_type').decode('utf-8'), 'DeepExplainGrad')
 
+    def test_mismatch_input_lens(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1 = tf.placeholder("float", [None, 1])
+            X2 = tf.placeholder("float", [None, 1])
+            w1 = tf.Variable(initial_value=[[0.10711301]])
+            w2 = tf.Variable(initial_value=[[0.69259691]])
+            out = tf.matmul(X1, w1) + tf.matmul(X2, w2)
+
+            self.session.run(tf.global_variables_initializer())
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', out, [X1, X2], [[1], [2], [3]])
+            self.assertIn(
+                'List of input tensors and input data have different lengths',
+                str(cm.exception)
+            )
+
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1 = tf.placeholder("float", [None, 1])
+            X2 = tf.placeholder("float", [None, 1])
+            w1 = tf.Variable(initial_value=[[10.0]])
+            w2 = tf.Variable(initial_value=[[10.0]])
+            out = tf.matmul(X1, w1) + tf.matmul(X2, w2)
+
+            self.session.run(tf.global_variables_initializer())
+            attributions = de.explain('grad*input', out, [X1, X2], [[[2]], [[3]]])
+            self.assertEqual(len(attributions), 2)
+            self.assertEqual(attributions[0][0], 20.0)
+            self.assertEqual(attributions[1][0], 30.0)
+
     def test_supported_activations(self):
         X = tf.placeholder("float", [None, 3])
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
@@ -176,18 +221,18 @@ class TestDeepExplainGeneralTF(TestCase):
             pass
         with self.assertRaises(RuntimeError) as cm:
             de.explain('grad*input', None, None, None)
-            self.assertEqual(
-                'Explain can be called only within a DeepExplain context.',
-                str(cm.exception)
-            )
+        self.assertEqual(
+            'Explain can be called only within a DeepExplain context.',
+            str(cm.exception)
+        )
 
     def test_invalid_method(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             with self.assertRaises(RuntimeError) as cm:
                 de.explain('invalid', None, None, None)
-                self.assertIn('Method must be in',
-                    str(cm.exception)
-                )
+            self.assertIn('Method must be in',
+                str(cm.exception)
+            )
 
     def test_gradient_was_not_overridden(self):
         X = tf.placeholder("float", [None, 3])
@@ -244,6 +289,16 @@ class TestSaliencyMethod(TestCase):
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.0, 1.0]], 10)
 
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            attributions = de.explain('saliency', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[2.0, 2.0]], 10)
+
+
 class TestGradInputMethod(TestCase):
 
     def setUp(self):
@@ -260,6 +315,16 @@ class TestGradInputMethod(TestCase):
             attributions = de.explain('grad*input', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [3.0, -1.0]], 10)
+
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            attributions = de.explain('grad*input', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 10)
+
 
 class TestIntegratedGradientsMethod(TestCase):
 
@@ -294,6 +359,16 @@ class TestIntegratedGradientsMethod(TestCase):
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)
 
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            attributions = de.explain('intgrad', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 10)
+
+
 class TestEpsilonLRPMethod(TestCase):
 
     def setUp(self):
@@ -326,6 +401,15 @@ class TestEpsilonLRPMethod(TestCase):
             with self.assertRaises(AssertionError):
                 de.explain('elrp', out, X, xi, epsilon=0)
 
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            attributions = de.explain('elrp', out, [X1, X2], xi, epsilon=1e-9)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 7)
+            np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
+
 
 class TestDeepLIFTMethod(TestCase):
 
@@ -351,6 +435,15 @@ class TestDeepLIFTMethod(TestCase):
             attributions = de.explain('deeplift', out, X, xi, baseline=xi[0])
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)
+
+    def test_multiple_inputs(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            attributions = de.explain('deeplift', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 7)
+            np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
 
 
 class TestOcclusionMethod(TestCase):
@@ -388,3 +481,12 @@ class TestOcclusionMethod(TestCase):
                 self.assertEqual(attributions.shape, xi.shape)
                 np.testing.assert_almost_equal(attributions, [[0.0, np.nan], [1.0, np.nan]], 10)
                 assert any(["nans" in str(wi.message) for wi in w])
+
+    def test_multiple_inputs_error(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('occlusion', out, [X1, X2], xi)
+            self.assertIn('not yet supported', str(cm.exception))
+

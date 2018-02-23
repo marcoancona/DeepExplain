@@ -148,6 +148,12 @@ embedding_out = sess.run(embedding, {input_x: x_test})
 attributions = de.explain('elrp', pre_softmax * y_test_logits, embedding, embedding_out)
 ```
 
+### Multiple inputs
+Models with multiple inputs are supported for gradient-based methods. Instead, the `Occlusion` method will raise an exception if
+ called on a model with multiple inputs (how perturbation should be generated for multiple inputs is actually not well defined).
+
+For a minimal (toy) example see the [example folder](https://github.com/marcoancona/DeepExplain/tree/master/examples).
+
 ## Contributing
 DeepExplain is still in active development. If you experience problems, feel free to open an issue. Contributions to extend the functinalities of this framework and/or to add support for other methods are welcome. 
 
