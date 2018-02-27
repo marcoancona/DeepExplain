@@ -57,6 +57,21 @@ def simple_multi_inputs_model(session):
     return X1, X2, out
 
 
+def simple_multi_inputs_model2(session):
+    """
+    Implements Relu (3*x1|2*x2) | is a concat op
+    :
+    """
+    X1 = tf.placeholder("float", [None, 2])
+    X2 = tf.placeholder("float", [None, 1])
+    w1 = tf.Variable(initial_value=[[3.0, 0.0], [0.0, 3.0]], trainable=False)
+    w2 = tf.Variable(initial_value=[[2.0], [2.0]], trainable=False)
+
+    out = tf.nn.relu(tf.concat([X1*w1, X2*w2], 1))
+    session.run(tf.global_variables_initializer())
+    return X1, X2, out
+
+
 def train_xor(session):
     # Since setting seed is not always working on TF, initial weights values are hardcoded for reproducibility
     X = tf.placeholder("float", [None, 2])
@@ -347,6 +362,8 @@ class TestIntegratedGradientsMethod(TestCase):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
+            print ('X')
+            print (X)
             attributions = de.explain('intgrad', out, X, xi, steps=500)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 2)
@@ -367,6 +384,15 @@ class TestIntegratedGradientsMethod(TestCase):
             self.assertEqual(len(attributions), len(xi))
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
             np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 10)
+
+    def test_multiple_inputs_different_sizes(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model2(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3]])]
+            attributions = de.explain('intgrad', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[12]], 10)
 
 
 class TestEpsilonLRPMethod(TestCase):
@@ -411,6 +437,7 @@ class TestEpsilonLRPMethod(TestCase):
             np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
 
 
+
 class TestDeepLIFTMethod(TestCase):
 
     def setUp(self):
@@ -444,6 +471,15 @@ class TestDeepLIFTMethod(TestCase):
             self.assertEqual(len(attributions), len(xi))
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 7)
             np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
+
+    def test_multiple_inputs_different_sizes(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model2(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3]])]
+            attributions = de.explain('deeplift', out, [X1, X2], xi)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[12]], 10)
 
 
 class TestOcclusionMethod(TestCase):

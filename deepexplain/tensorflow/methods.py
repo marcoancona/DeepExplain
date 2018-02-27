@@ -73,6 +73,7 @@ class AttributionMethod(object):
         self.session = session
         self.keras_learning_phase = keras_learning_phase
         self.has_multiple_inputs = type(self.X) is list or type(self.X) is tuple
+        print ('Model with multiple inputs: ', self.has_multiple_inputs)
 
     def session_run(self, T, xs):
         feed_dict = {}
@@ -83,7 +84,7 @@ class AttributionMethod(object):
             for k, v in zip(self.X, xs):
                 feed_dict[k] = v
         else:
-            feed_dict = {self.X: xs}
+            feed_dict[self.X] = xs
 
         if self.keras_learning_phase is not None:
             feed_dict[self.keras_learning_phase] = 0
@@ -211,11 +212,16 @@ class IntegratedGradients(GradientBasedMethod):
         attributions = self.get_symbolic_attribution()
         gradient = None
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
-            xs_mod = (np.array(self.xs) * alpha).tolist()
+            xs_mod = [xs * alpha for xs in self.xs] if self.has_multiple_inputs else self.xs * alpha
             _attr = self.session_run(attributions, xs_mod)
-            if gradient is None: gradient = np.array(_attr)
-            else: gradient += np.array(_attr)
-        results = gradient * (np.array(self.xs) - np.array(self.baseline)) / self.steps
+            if gradient is None: gradient = _attr
+            else: gradient = [g + a for g, a in zip(gradient, _attr)]
+
+        results = [g * (x - b) / self.steps for g, x, b in zip(
+            gradient,
+            self.xs if self.has_multiple_inputs else [self.xs],
+            self.baseline if self.has_multiple_inputs else [self.baseline])]
+
         return results[0] if not self.has_multiple_inputs else results
 
 
