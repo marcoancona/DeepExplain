@@ -3,11 +3,13 @@ from scipy.stats import norm
 import numpy as np
 from math import e
 
-def estimate_shap(weights, bias):
+def estimate_shap(weights, bias, baseline=None):
     # Given a voting game of n players return approx shapley values
     # weights: np.array of size n
     # returns an np.array of size n
     #print (weights)
+    if baseline is None:
+        baseline = np.zeros_like(weights)
     n = len(weights) # number of players
     q = bias # quota for the game
     mean = np.mean(weights)
@@ -15,26 +17,26 @@ def estimate_shap(weights, bias):
     var = np.var(weights)
     print ("Var: ", var)
 
-    Xs = range(0, n, max(1, int(n / 10)))
+    Xs = range(0, n, max(1, int(n / 30)))
     shapley = []
 
     def relu(x):
         return x * (x>0)
 
-    def integrand(x, X, wi):
-        return e**(-X * (x-mean)**2 / (2*var)) * (relu(x*X + q + wi) - relu(x*X + q))
+    def integrand(x, X, wi, bi):
+        return 1. / ((2*3.1415926535*var/X)**0.5) * e**(-X * (x-mean)**2 / (2*var)) * (relu(x*X + q + wi) - relu(x*X + q))
 
-    for wi in weights:
+    for wi, bi in zip(weights, baseline):
         r = 0.0
         for X in Xs:
             if X == 0:
-                r += (relu(q + wi) - relu(q))
+                r += (relu(q + wi) - relu(q + bi))
             # elif X == 1:
             #     r += (max(0, q + mean + wi) - max(0, q + mean))
             else:
                 #r += (relu(q + wi) - relu(q))
-                const = 1. / (np.sqrt(2*np.pi*var/X))
-                r += const * integrate.quad(integrand, -np.inf, np.inf, (X,wi))[0]
+                sigma = (var/X)**0.5
+                r += integrate.fixed_quad(integrand, mean-4*sigma, mean+4*sigma, (X,wi,bi))[0]
 
                 #r += (1.0 - norm.cdf(b, mean, np.sqrt(var))) * wi
         shapley.append(r / len(Xs))
