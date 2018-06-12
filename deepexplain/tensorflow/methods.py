@@ -10,6 +10,7 @@ import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import nn_grad, math_grad
 from collections import OrderedDict
+from .deep_shapley import estimate_shap
 
 SUPPORTED_ACTIVATIONS = [
     'Relu', 'Elu', 'Sigmoid', 'Tanh', 'Softplus'
@@ -21,6 +22,9 @@ UNSUPPORTED_ACTIVATIONS = [
 
 _ENABLED_METHOD_CLASS = None
 _GRAD_OVERRIDE_CHECKFLAG = 0
+_MATMUL_GRAD_OVERRIDE_CHECKFLAG = 0
+
+SESSION = None
 
 
 # -----------------------------------------------------------------------------
@@ -47,8 +51,8 @@ def original_grad(op, grad):
     :param grad: Tensor
     :return: Tensor
     """
-    if op.type not in SUPPORTED_ACTIVATIONS:
-        warnings.warn('Activation function (%s) not supported' % op.type)
+    #if op.type not in SUPPORTED_ACTIVATIONS:
+    #    warnings.warn('Activation function (%s) not supported' % op.type)
     opname = '_%sGrad' % op.type
     if hasattr(nn_grad, opname):
         f = getattr(nn_grad, opname)
@@ -127,6 +131,10 @@ class GradientBasedMethod(AttributionMethod):
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
+        return original_grad(op, grad)
+
+    @classmethod
+    def matmul_grad_override(cls, op, grad):
         return original_grad(op, grad)
 
 
@@ -296,7 +304,7 @@ class DeepLIFTRescale(GradientBasedMethod):
         return super(DeepLIFTRescale, self).run()
 
     def _init_references(self):
-        # print ('DeepLIFT: computing references...')
+        print ('DeepLIFT: computing references...')
         sys.stdout.flush()
         self._deeplift_ref.clear()
         ops = []
@@ -305,10 +313,115 @@ class DeepLIFTRescale(GradientBasedMethod):
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
                 if op.type in SUPPORTED_ACTIVATIONS:
                     ops.append(op)
+        print (ops)
+        print (self.baseline)
         YR = self.session_run([o.inputs[0] for o in ops], self.baseline)
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
-        # print('DeepLIFT: references ready')
+        print (self._deeplift_ref)
+        print('DeepLIFT: references ready')
+        sys.stdout.flush()
+
+
+"""
+DeepShapley
+"""
+
+
+class DeepShapley(GradientBasedMethod):
+
+    _deepshap_ref = {}
+    _deepshap_for = {}
+
+    def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
+        super(DeepShapley, self).__init__(T, X, xs, session, keras_learning_phase)
+        self.baseline = baseline
+
+    def get_symbolic_attribution(self):
+        return [g * (x - b) for g, x, b in zip(
+            tf.gradients(self.T, self.X),
+            self.X if self.has_multiple_inputs else [self.X],
+            self.baseline if self.has_multiple_inputs else [self.baseline])]
+
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
+        #output = op.outputs[0]
+        #input = op.inputs[0]
+        # Identify function
+        return grad
+
+    @classmethod
+    def matmul_grad_override(cls, op, grad):
+        # We assume this matmul is followed by a BiasAdd and a Relu op
+        players = cls._deepshap_for[op.name + "_x"]
+        weights = cls._deepshap_for[op.name + "_w"]
+        bias = cls._deepshap_for[op.name + '_b']
+        reference = cls._deepshap_ref[op.name + "_x"]
+
+        print (players.shape)
+        print (weights.shape)
+        print (bias.shape)
+        print (reference.shape)
+
+        g1, g2 = original_grad(op, grad)
+
+        print (grad)
+
+        grad_list = []
+        for idx in range(players.shape[0]):
+            new_grad = tf.zeros_like(players[idx])
+            for out_idx in range(weights.shape[-1]):
+                dot = players[idx] * weights[:, out_idx]
+                print ("Dot ", dot.shape)
+                shap = estimate_shap(dot, bias[out_idx])
+                print ("Shap", shap.shape)
+                g = shap * grad[idx, out_idx]
+                print ("Grad ", g.shape)
+                new_grad += g
+            grad_list.append(new_grad / np.where(players[idx] != 0, players[idx], 1.0))
+
+        result = tf.stack(grad_list)
+        print (g1.get_shape())
+        return result, g2
+
+    def run(self):
+        # Check user baseline or set default one
+        self._set_check_baseline()
+
+        # Init references with a forward pass
+        self._init_references()
+
+        # Run the default run
+        return super(DeepShapley, self).run()
+
+    def _init_references(self):
+        print ('Shapley: computing references...')
+        sys.stdout.flush()
+        self._deepshap_ref.clear()
+        ops = []
+        tensors = []
+        g = tf.get_default_graph()
+        for op in g.get_operations():
+            if len(op.inputs) > 0 and not 'gradients' in op.name and 'model' in op.name:
+                #print (op.name)
+                if op.type == 'MatMul':
+                    ops.append(op.name + "_x")
+                    tensors.append(op.inputs[0])
+                    ops.append(op.name + "_w")
+                    tensors.append(op.inputs[1])
+                elif op.type == 'BiasAdd':
+                    ops.append(op.name[:-7] + "MatMul_b")
+                    tensors.append(op.inputs[1])
+
+        YXS = self.session_run(tensors, self.xs)
+        YR = self.session_run(tensors, self.baseline)
+        for (r, opName) in zip(YR, ops):
+            self._deepshap_ref[opName] = r
+        for (r, opName) in zip(YXS, ops):
+            self._deepshap_for[opName] = r
+        for k in self._deepshap_ref.keys():
+            print (k, self._deepshap_ref[k].shape)
+        print('Shapley: references ready')
         sys.stdout.flush()
 
 
@@ -397,7 +510,8 @@ attribution_methods = OrderedDict({
     'intgrad': (IntegratedGradients, 3),
     'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
-    'occlusion': (Occlusion, 6)
+    'shapley': (DeepShapley, 6),
+    'occlusion': (Occlusion, 7)
 })
 
 
@@ -412,10 +526,21 @@ def deepexplain_grad(op, grad):
     else:
         return original_grad(op, grad)
 
+@ops.RegisterGradient("MatMulDeepExplainGrad")
+def matmul_deepexplain_grad(op, grad):
+    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+    if _ENABLED_METHOD_CLASS is not None \
+            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+        return _ENABLED_METHOD_CLASS.matmul_grad_override(op, grad)
+    else:
+        return original_grad(op, grad)
+
 
 class DeepExplain(object):
 
     def __init__(self, graph=None, session=tf.get_default_session()):
+        global SESSION
         self.method = None
         self.batch_size = None
         self.session = session
@@ -426,6 +551,7 @@ class DeepExplain(object):
         self.context_on = False
         if self.session is None:
             raise RuntimeError('DeepExplain: could not retrieve a session. Use DeepExplain(session=your_session).')
+        SESSION = session
 
     def __enter__(self):
         # Override gradient of all ops created in context
@@ -442,7 +568,8 @@ class DeepExplain(object):
     def explain(self, method, T, X, xs, **kwargs):
         if not self.context_on:
             raise RuntimeError('Explain can be called only within a DeepExplain context.')
-        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
+        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+
         self.method = method
         if self.method in attribution_methods:
             method_class, method_flag = attribution_methods[self.method]
@@ -451,6 +578,7 @@ class DeepExplain(object):
         print('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
         self._check_ops()
         _GRAD_OVERRIDE_CHECKFLAG = 0
+        _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 0
 
         _ENABLED_METHOD_CLASS = method_class
         method = _ENABLED_METHOD_CLASS(T, X, xs, self.session, self.keras_phase_placeholder, **kwargs)
@@ -461,12 +589,17 @@ class DeepExplain(object):
                           '(re)create your graph within the DeepExlain context. Results are not reliable!')
         _ENABLED_METHOD_CLASS = None
         _GRAD_OVERRIDE_CHECKFLAG = 0
+        _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 0
+
         self.keras_phase_placeholder = None
         return result
 
     @staticmethod
     def get_override_map():
-        return dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
+        map = dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
+        map['MatMul'] = 'MatMulDeepExplainGrad'
+        print (map)
+        return map
 
     def _check_ops(self):
         """
