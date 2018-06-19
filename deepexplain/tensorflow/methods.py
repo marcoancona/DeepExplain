@@ -324,6 +324,29 @@ class DeepLIFTRescale(GradientBasedMethod):
 
 
 """
+Linear
+"""
+
+
+class Linear(GradientBasedMethod):
+
+
+    def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
+        super(Linear, self).__init__(T, X, xs, session, keras_learning_phase)
+        self.baseline = baseline
+
+    def get_symbolic_attribution(self):
+        return [g * (x - b) for g, x, b in zip(
+            tf.gradients(self.T, self.X),
+            self.X if self.has_multiple_inputs else [self.X],
+            self.baseline if self.has_multiple_inputs else [self.baseline])]
+
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
+        return grad
+
+
+"""
 DeepShapley
 """
 
@@ -346,13 +369,14 @@ class DeepShapley(GradientBasedMethod):
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
         #output = op.outputs[0]
-        #input = op.inputs[0]
+        input = op.inputs[0]
         # Identify function
         return grad
+        #return tf.where(input > 0, grad, 0.3*grad)
 
     @classmethod
     def matmul_grad_override(cls, op, grad):
-        # We assume this matmul is followed by a BiasAdd and a Relu op
+        #We assume this matmul is followed by a BiasAdd and a Relu op
         players = cls._deepshap_for[op.name + "_x"]
         weights = cls._deepshap_for[op.name + "_w"]
         bias = cls._deepshap_for[op.name + '_b']
@@ -364,24 +388,27 @@ class DeepShapley(GradientBasedMethod):
         print (reference.shape)
 
         g1, g2 = original_grad(op, grad)
-
-        print (grad)
+        if 'dense_3' in op.name:
+            print ("Skip dense_3")
+            return g1, g2
 
         grad_list = []
         for idx in range(players.shape[0]):
             new_grad = tf.zeros_like(players[idx])
             for out_idx in range(weights.shape[-1]):
                 dot = players[idx] * weights[:, out_idx]
-                print ("Dot ", dot.shape)
-                shap = estimate_shap(dot, bias[out_idx])
-                print ("Shap", shap.shape)
+                dot_baseline = reference[idx] * weights[:, out_idx]
+                #print ("Dot ", dot.shape)
+                shap = estimate_shap(dot, bias[out_idx], dot_baseline)
+                #print ("Shap", shap.shape)
                 g = shap * grad[idx, out_idx]
-                print ("Grad ", g.shape)
+                #g = weights[:, out_idx] * grad[idx, out_idx]
+                #print ("Grad ", g.shape)
                 new_grad += g
-            grad_list.append(new_grad / np.where(players[idx] != 0, players[idx], 1.0))
+            dx = players[idx] - reference[idx]
+            grad_list.append(new_grad / np.where(dx != 0, dx, 1.0))
 
         result = tf.stack(grad_list)
-        print (g1.get_shape())
         return result, g2
 
     def run(self):
@@ -511,7 +538,8 @@ attribution_methods = OrderedDict({
     'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
     'shapley': (DeepShapley, 6),
-    'occlusion': (Occlusion, 7)
+    'linear': (DeepShapley, 7),
+    'occlusion': (Occlusion, 8)
 })
 
 
@@ -593,6 +621,18 @@ class DeepExplain(object):
 
         self.keras_phase_placeholder = None
         return result
+
+    def enable_override(self, method):
+        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+        if method in attribution_methods:
+            method_class, method_flag = attribution_methods[method]
+            _ENABLED_METHOD_CLASS = method_class
+        else:
+            raise RuntimeError('Method must be in %s' % list(attribution_methods.keys()))
+
+    def disable_override(self):
+        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+        _ENABLED_METHOD_CLASS = None
 
     @staticmethod
     def get_override_map():

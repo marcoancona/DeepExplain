@@ -69,3 +69,9 @@ examples/\.ipynb_checkpoints/
 *.ckpt
 
 *.data-00000-of-00001
+
+*.h5
+
+*.hdf5
+
+examples/Test/
