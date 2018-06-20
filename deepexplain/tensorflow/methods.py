@@ -10,7 +10,7 @@ import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import nn_grad, math_grad
 from collections import OrderedDict
-from .deep_shapley import estimate_shap
+from .deep_shapley import eta_shap
 
 SUPPORTED_ACTIVATIONS = [
     'Relu', 'Elu', 'Sigmoid', 'Tanh', 'Softplus'
@@ -329,17 +329,13 @@ Linear
 
 
 class Linear(GradientBasedMethod):
-
-
-    def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
+    def __init__(self, T, X, xs, session, keras_learning_phase):
         super(Linear, self).__init__(T, X, xs, session, keras_learning_phase)
-        self.baseline = baseline
 
     def get_symbolic_attribution(self):
-        return [g * (x - b) for g, x, b in zip(
+        return [g * x for g, x in zip(
             tf.gradients(self.T, self.X),
-            self.X if self.has_multiple_inputs else [self.X],
-            self.baseline if self.has_multiple_inputs else [self.baseline])]
+            self.X if self.has_multiple_inputs else [self.X])]
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -394,21 +390,15 @@ class DeepShapley(GradientBasedMethod):
 
         grad_list = []
         for idx in range(players.shape[0]):
-            new_grad = tf.zeros_like(players[idx])
-            for out_idx in range(weights.shape[-1]):
-                dot = players[idx] * weights[:, out_idx]
-                dot_baseline = reference[idx] * weights[:, out_idx]
-                #print ("Dot ", dot.shape)
-                shap = estimate_shap(dot, bias[out_idx], dot_baseline)
-                #print ("Shap", shap.shape)
-                g = shap * grad[idx, out_idx]
-                #g = weights[:, out_idx] * grad[idx, out_idx]
-                #print ("Grad ", g.shape)
-                new_grad += g
-            dx = players[idx] - reference[idx]
-            grad_list.append(new_grad / np.where(dx != 0, dx, 1.0))
+            outer = np.expand_dims(players[idx], 1) * weights
+            outer_b = np.expand_dims(reference[idx], 1) * weights
+            eta = eta_shap(outer, bias, outer_b)
+            grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
 
         result = tf.stack(grad_list)
+        assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
+            "Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
+        print ('Return')
         return result, g2
 
     def run(self):
@@ -538,7 +528,7 @@ attribution_methods = OrderedDict({
     'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
     'shapley': (DeepShapley, 6),
-    'linear': (DeepShapley, 7),
+    'linear': (Linear, 7),
     'occlusion': (Occlusion, 8)
 })
 
