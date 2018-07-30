@@ -74,6 +74,7 @@ def powerset(iterable):
 
 
 def compute_shapley(inputs, f, baseline=None):
+    print ("Exact Shapley")
     if baseline is None:
         baseline = np.zeros_like(inputs)
     results = np.zeros(inputs.shape)
@@ -100,6 +101,11 @@ def main():
     w = 5 * np.random.rand(5)
     b = 10 * np.random.rand(1)
     b = -3
+    n = 5
+    x = np.array([-1.0] + [2/(n-1)]*(n-1))
+    w = np.array([1.0] * n)
+    b = 0
+
     print ("x: ", x)
     print ("b: ", b)
     print ("x * w: ", x*w)

@@ -378,20 +378,21 @@ class DeepShapley(GradientBasedMethod):
         bias = cls._deepshap_for[op.name + '_b']
         reference = cls._deepshap_ref[op.name + "_x"]
 
-        print (players.shape)
-        print (weights.shape)
-        print (bias.shape)
-        print (reference.shape)
+        # print (players.shape)
+        # print (weights.shape)
+        # print (bias.shape)
+        # print (reference.shape)
+        print ('Matmul override: ', op.name)
 
         g1, g2 = original_grad(op, grad)
         if 'dense_3' in op.name:
-            print ("Skip dense_3")
+            print ("\t skipping...")
             return g1, g2
 
         grad_list = []
         for idx in range(players.shape[0]):
             outer = np.expand_dims(players[idx], 1) * weights
-            outer_b = np.expand_dims(reference[idx], 1) * weights
+            outer_b = np.expand_dims(reference[0], 1) * weights
             eta = eta_shap(outer, bias, outer_b)
             grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
 
