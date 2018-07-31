@@ -16,7 +16,6 @@ def estimate_shap(weights, bias, baseline):
     # print ("Warning, overriding baseline")
     # baseline = np.zeros_like(weights)
 
-
     print ("Estimating shape. Input shape: ", weights.shape)
 
     # Sanity checks
@@ -25,18 +24,18 @@ def estimate_shap(weights, bias, baseline):
 
     n, m = weights.shape
 
-    #means = np.mean(weights, 0)
-    means = np.sum(weights, 0)[np.newaxis, ...].repeat(n, 0) / (n-1) - weights / (n-1)
+    # Work on delta input (in other words, move value for absent player to its baseline value)
+    # Will compute mean and variance on deltas, not on players
+    deltas = weights - baseline
+    # Compute total bias, which consists of original bias (network weight) and the input due to baseline
+    bias_total = bias + np.sum(baseline, 0)
+
+    means = np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0) / (n-1) - deltas / (n-1)
     #assert means.shape[0] == m
     assert means.shape == (n, m)
 
-    #means_b = np.mean(baseline, 0)
-    means_b = np.sum(baseline, 0)[np.newaxis, ...].repeat(n, 0) / (n - 1) + baseline / (n - 1)
-
-    #vars = np.var(weights, 0)[np.newaxis, ...].repeat(n, 0)
-
-    vars = np.sum(weights**2, 0)[np.newaxis, ...].repeat(n, 0)- weights**2
-    _sum = np.sum(weights, 0)[np.newaxis, ...].repeat(n, 0)- weights
+    vars = np.sum(deltas**2, 0)[np.newaxis, ...].repeat(n, 0)- deltas**2
+    _sum = np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0)- deltas
     vars = (vars - _sum / (n-1)) / (n-2 if n-2 > 0 else np.inf)
     vars = vars + 0.001
 
@@ -51,14 +50,13 @@ def estimate_shap(weights, bias, baseline):
     #assert means_b.shape[0] == m
     #assert vars.shape[0] == m
 
-    I = weights + np.repeat(np.expand_dims(bias, 0), n, 0)
-    Ib = baseline + np.repeat(np.expand_dims(bias, 0), n, 0)
+    I =  baseline + deltas + np.repeat(np.expand_dims(bias_total, 0), n, 0)
+    Ib = baseline + np.repeat(np.expand_dims(bias_total, 0), n, 0)
 
     assert I.shape == (n, m)
     assert Ib.shape == (n, m)
 
     Xs = range(0, n, max(1, int(n / 20)))
-    #Xs = range(0, n, 1)
     steps = 2**8+1
     R = np.zeros_like(I)
 
@@ -76,7 +74,6 @@ def estimate_shap(weights, bias, baseline):
         assert exp.shape == (n, m, steps), exp.shape
         #exp = np.expand_dims(exp, 0)
         #assert exp.shape == (n, m, steps)
-        #gain = np.maximum(0, np.expand_dims(I, -1) + t*k + means_b[..., np.newaxis]*(n-k-1)) - np.maximum(0, np.expand_dims(Ib, -1) + t*k + means_b[..., np.newaxis]*(n-k-1))
         gain = np.maximum(0, np.expand_dims(I, -1) + t*k) - np.maximum(0, np.expand_dims(Ib, -1) + t*k)
         assert gain.shape == (n, m, steps), gain.shape
         # [n, m, 1] * [m, m, steps] * [n, m, steps]
@@ -88,18 +85,11 @@ def estimate_shap(weights, bias, baseline):
             R += (np.maximum(0, I) - np.maximum(0, Ib))
             #print ('R: ', R)
         else:
-            sigma = (np.mean(vars)/k)**0.5  # just a guess
-            mean = np.mean(means)
-            assert mean.shape == ()
-            assert sigma.shape == ()
-            #print (sigma)
-
-            int_range = np.linspace(-5, 10, steps)
+            int_range = np.linspace(-5, 5, steps)
             delta = (int_range[1]-int_range[0])
             s = integrand(int_range + delta/2, k)
             assert s.shape == (n , m, steps)
             R += np.sum(s, -1) * delta
-            #print('R: ', R)
 
     return R / len(Xs)
 
@@ -113,7 +103,8 @@ def eta_shap(weights, bias, baseline=None):
 
     shap = estimate_shap(weights, bias, baseline)
     divisor = weights - baseline
-    return np.divide(shap, divisor, out=np.zeros_like(shap), where=divisor!=0)
+    result = np.divide(shap, divisor, out=np.zeros_like(shap), where=divisor!=0)
+    return result
 
 
 def eta_shap_exact(weights, bias, baseline=None):
@@ -122,7 +113,9 @@ def eta_shap_exact(weights, bias, baseline=None):
     for i in range(m):
         shap[:, i] = compute_shapley(weights[:, i], lambda x: np.maximum(np.sum(x) + bias[i], 0), baseline=baseline[:, i])
     divisor = weights - baseline
-    return np.divide(shap, divisor, out=np.zeros_like(shap), where=divisor != 0)
+    result= np.divide(shap, divisor, out=np.zeros_like(shap), where=divisor != 0)
+    print (result)
+    return result
 
 
 

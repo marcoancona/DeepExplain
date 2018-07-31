@@ -75,3 +75,5 @@ examples/\.ipynb_checkpoints/
 *.hdf5
 
 examples/Test/
+
+*.npy
