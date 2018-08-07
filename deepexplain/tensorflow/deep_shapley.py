@@ -107,14 +107,24 @@ def eta_shap(weights, bias, baseline=None):
     return result
 
 
-def eta_shap_exact(weights, bias, baseline=None):
+def eta_shap_exact(weights, bias=None, baseline=None, f='relu'):
+    #print ("Eta shap exact")
+    #print (weights)
     n, m = weights.shape
     shap = np.zeros_like(weights)
+    if baseline is None:
+        baseline = np.zeros_like(weights)
+    if bias is None:
+        bias = np.zeros_like((m,))
     for i in range(m):
-        shap[:, i] = compute_shapley(weights[:, i], lambda x: np.maximum(np.sum(x) + bias[i], 0), baseline=baseline[:, i])
+        if f is 'relu':
+            f_ = lambda x: np.maximum(np.sum(x) + bias[i], 0)
+        else:
+            f_ = f
+        shap[:, i] = compute_shapley(weights[:, i], f_, baseline=baseline[:, i])
     divisor = weights - baseline
     result= np.divide(shap, divisor, out=np.zeros_like(shap), where=divisor != 0)
-    print (result)
+    #print (result)
     return result
 
 

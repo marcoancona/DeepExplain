@@ -92,12 +92,12 @@ def vec_bin_array(arr, m):
 
 
 def compute_shapley(inputs, f, baseline=None):
-    print ("Exact Shapley (v2)")
-    print (inputs.shape)
+    #print ("Exact Shapley (v2)")
+    #print (inputs.shape)
     if baseline is None:
         baseline = np.zeros_like(inputs)
     results = np.zeros(inputs.shape)
-    n = len(inputs)
+    n = inputs.shape[0]
     # Create powerset binary mask with shape (2**n, n)
     # Note: we first exclude column with index index, then we add it
     mask = vec_bin_array(np.arange(2 ** (n-1)), n-1)
@@ -111,16 +111,17 @@ def compute_shapley(inputs, f, baseline=None):
         # print(mask_wo_index.shape)
         # assert mask_wo_index.shape == (2 ** (n - 1), n), 'Mask shape does not match'
 
-        run_wo_i = f(inputs * mask_wo_index)  # run all masks at once
-        run_wi_i = f(inputs * mask_wi_index)  # run all masks at once
+        run_wo_i = f(inputs * mask_wo_index + baseline * (~mask_wo_index))  # run all masks at once
+        run_wi_i = f(inputs * mask_wi_index + baseline * (~mask_wi_index))  # run all masks at once
         # assert len(run_wi_i.shape) == 1, 'Result shape len does not match %s' % (run_wi_i.shape,)
+        #print (run_wi_i)
         r = (run_wi_i - run_wo_i) * coeff
         results[index] = r.sum()
 
     return results
 
 
-def compute_shapley_l(inputs, f, baseline=None):
+def compute_shapley_legacy(inputs, f, baseline=None):
     print ("Exact Shapley")
     if baseline is None:
         baseline = np.zeros_like(inputs)
@@ -153,11 +154,15 @@ def main():
     w = np.array([1.0] * n)
     b = 0
 
+    x= np.array([1, 2, 3, 10])
+
     print ("x: ", x)
-    print ("b: ", b)
-    print ("x * w: ", x*w)
-    print ("y: ", f_linear_relu(x, w, b))
-    shapley = compute_shapley(x, lambda x: f_linear_relu(x, w, b))
+    print ("y: ", np.max(x))
+    #print ("b: ", b)
+    #print ("x * w: ", x*w)
+    #print ("y: ", f_linear_relu(x, w, b))
+    #shapley = compute_shapley(x, lambda x: f_linear_relu(x, w, b))
+    shapley = compute_shapley(x, lambda x: np.max(x, 1))
     print ("Shapley: ", shapley)
     print ("Sum: ", np.sum(shapley))
 

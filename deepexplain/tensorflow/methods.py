@@ -10,7 +10,8 @@ import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import nn_grad, math_grad
 from collections import OrderedDict
-from .deep_shapley import eta_shap
+from .deep_shapley import eta_shap, eta_shap_exact
+from .exact_shapley import compute_shapley as exact_shapley
 
 SUPPORTED_ACTIVATIONS = [
     'Relu', 'Elu', 'Sigmoid', 'Tanh', 'Softplus'
@@ -136,6 +137,24 @@ class GradientBasedMethod(AttributionMethod):
     @classmethod
     def matmul_grad_override(cls, op, grad):
         return original_grad(op, grad)
+
+    @classmethod
+    def convolution_grad_override(cls, op, grad):
+        print ('Conv')
+        print (op)
+        print (grad)
+        print (original_grad(op, grad))
+        return original_grad(op, grad)
+
+    @classmethod
+    def maxpool_grad_override(cls, op, grad):
+        print('maxpool')
+        print(op)
+        print(grad)
+        print(original_grad(op, grad))
+        return original_grad(op, grad)
+
+
 
 
 class PerturbationBasedMethod(AttributionMethod):
@@ -363,12 +382,75 @@ class DeepShapley(GradientBasedMethod):
             self.baseline if self.has_multiple_inputs else [self.baseline])]
 
     @classmethod
-    def nonlinearity_grad_override(cls, op, grad):
-        #output = op.outputs[0]
-        input = op.inputs[0]
-        # Identify function
-        return grad
-        #return tf.where(input > 0, grad, 0.3*grad)
+    def convolution_grad_override(cls, op, grad):
+        print ('Conv')
+        print (op)
+        print (grad)
+        print (original_grad(op, grad))
+        return original_grad(op, grad)
+
+    @classmethod
+    def maxpool_grad_override(cls, op, grad):
+        players = cls._deepshap_for[op.name + "_x"]
+        reference = cls._deepshap_ref[op.name + "_x"]
+
+        b, w, h, c = players.shape
+        #print (b, w, h, c)
+        _, kw, kh, _ = op.get_attr('ksize')
+        hw, hh = w // kw, h // kh
+        #print (_, kw, kh, _)
+        pad = [[0, 0], [0, 0]]
+        x = tf.space_to_batch_nd(players, [kw, kh], pad)
+        r = tf.space_to_batch_nd(reference, [kw, kh], pad)
+        #print(patches.shape)
+        x = tf.reshape(x, (kw * kh, -1))
+        r = tf.reshape(r, (kw * kh, -1))
+        #print(patches.shape)
+       # patches = tf.transpose(patches, perm=[1, 0, 2])
+        #print(patches.shape)
+        # print (patches.eval(session=SESSION))
+        #patches = tf.reshape(patches, (kw * kh, -1))
+        #print(patches.shape)
+
+        grad_flat = tf.reshape(grad, (-1,))
+
+        x_np = tf.transpose(x, (1, 0)).eval(session=SESSION)
+        r_np = tf.transpose(r, (1, 0)).eval(session=SESSION)
+        grad_list = []
+        for idx in range(x_np.shape[0]):
+            players = np.expand_dims(x_np[idx], 1)
+            baseline = np.expand_dims(r_np[0], 1)  # Baseline always the same
+            # if (np.count_nonzero(players-baseline)) == 0:
+            #     grad_list.append(np.squeeze(players))
+            #     continue
+            eta = eta_shap_exact(players, None, baseline, f=lambda x: np.max(x, 1))
+            grad_list.append(grad_flat[idx] * np.squeeze(eta))
+
+        result = tf.stack(grad_list)
+
+        # Original gradient of maxpool (for sanity test)
+        # Uncomment the following lines to discard Shapley and use a custom implementation of max pooling
+        # argmax_ = tf.argmax(x_np, 1)
+        # result = tf.one_hot(argmax_, kw * kh, axis=1) * tf.expand_dims(grad_flat, -1)
+        # end override
+
+        print ("result", result.shape)
+        result = tf.transpose(result, (1, 0))
+        result = tf.reshape(result, (kw * kh, b, -1))
+        result = tf.reshape(result, (-1, hw, hh, c))
+        result = tf.batch_to_space_nd(result, [kw, kh], pad)
+
+        original = original_grad(op, grad)
+
+        return result
+
+    # @classmethod
+    # def nonlinearity_grad_override(cls, op, grad):
+    #     #output = op.outputs[0]
+    #     # input = op.inputs[0]
+    #     # Identify function
+    #     return grad
+    #     #return tf.where(input > 0, grad, 0.3*grad)
 
     @classmethod
     def matmul_grad_override(cls, op, grad):
@@ -385,6 +467,7 @@ class DeepShapley(GradientBasedMethod):
         print ('Matmul override: ', op.name)
 
         g1, g2 = original_grad(op, grad)
+        #return g1, g2
         if 'dense_3' in op.name:
             print ("\t skipping...")
             return g1, g2
@@ -421,7 +504,7 @@ class DeepShapley(GradientBasedMethod):
         g = tf.get_default_graph()
         for op in g.get_operations():
             if len(op.inputs) > 0 and not 'gradients' in op.name and 'model' in op.name:
-                #print (op.name)
+                print (op.type + ": " + op.name)
                 if op.type == 'MatMul':
                     ops.append(op.name + "_x")
                     tensors.append(op.inputs[0])
@@ -430,6 +513,9 @@ class DeepShapley(GradientBasedMethod):
                 elif op.type == 'BiasAdd':
                     ops.append(op.name[:-7] + "MatMul_b")
                     tensors.append(op.inputs[1])
+                elif op.type == 'MaxPool':
+                    ops.append(op.name + "_x")
+                    tensors.append(op.inputs[0])
 
         YXS = self.session_run(tensors, self.xs)
         YR = self.session_run(tensors, self.baseline)
@@ -555,6 +641,27 @@ def matmul_deepexplain_grad(op, grad):
     else:
         return original_grad(op, grad)
 
+@ops.RegisterGradient("ConvolutionDeepExplainGrad")
+def convolution_deepexplain_grad(op, grad):
+    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+    if _ENABLED_METHOD_CLASS is not None \
+            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+        return _ENABLED_METHOD_CLASS.convolution_grad_override(op, grad)
+    else:
+        return original_grad(op, grad)
+
+
+@ops.RegisterGradient("MaxPoolDeepExplainGrad")
+def maxpool_deepexplain_grad(op, grad):
+    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+    if _ENABLED_METHOD_CLASS is not None \
+            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+        return _ENABLED_METHOD_CLASS.maxpool_grad_override(op, grad)
+    else:
+        return original_grad(op, grad)
+
 
 class DeepExplain(object):
 
@@ -628,7 +735,9 @@ class DeepExplain(object):
     @staticmethod
     def get_override_map():
         map = dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
-        map['MatMul'] = 'MatMulDeepExplainGrad'
+        #map['MatMul'] = 'MatMulDeepExplainGrad'
+        #map['Conv2D'] = 'ConvolutionDeepExplainGrad'
+        map['MaxPool'] = 'MaxPoolDeepExplainGrad'
         print (map)
         return map
 
