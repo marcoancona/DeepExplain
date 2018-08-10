@@ -10,8 +10,7 @@ import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import nn_grad, math_grad
 from collections import OrderedDict
-from .deep_shapley import eta_shap, eta_shap_exact
-from .exact_shapley import compute_shapley as exact_shapley
+from .deep_shapley import eta_shap
 
 SUPPORTED_ACTIVATIONS = [
     'Relu', 'Elu', 'Sigmoid', 'Tanh', 'Softplus'
@@ -383,11 +382,90 @@ class DeepShapley(GradientBasedMethod):
 
     @classmethod
     def convolution_grad_override(cls, op, grad):
-        print ('Conv')
+        #We assume this matmul is followed by a BiasAdd and a Relu op
+        players = cls._deepshap_for[op.name + "_x"]
+        kernel = cls._deepshap_for[op.name + "_w"]
+        bias = cls._deepshap_for[op.name + '_b']
+        reference = cls._deepshap_ref[op.name + "_x"]
         print (op)
-        print (grad)
-        print (original_grad(op, grad))
-        return original_grad(op, grad)
+        # print (players.shape)
+        # print (weights.shape)
+        # print (bias.shape)
+        # print (reference.shape)
+        print ('Conv2d override: ', op.name)
+        grad_shape = players.shape
+
+        g1, g2 = original_grad(op, grad)
+
+        # Convert Conv2D into MatMul operation and proceed
+        ksizes = (1,) + kernel.shape[:-1]
+        strides = op.get_attr('strides')
+        padding = op.get_attr('padding')
+        rates = op.get_attr('dilations')
+
+        def extract_patches(x):
+            return tf.extract_image_patches(
+                x,
+                ksizes=ksizes,
+                strides=strides,
+                rates=rates,
+                padding=padding
+            )
+
+        def extract_patches_inverse(x, y):
+            _x = tf.zeros_like(x)
+            print (_x)
+            _y = extract_patches(_x)
+            print (_y)
+            y = tf.check_numerics(
+                y,
+                'y contains nans',
+            )
+            grad = tf.gradients(_y, _x)[0]
+            # Divide by grad, to "average" together the overlapping patches
+            # otherwise they would simply sum up
+            return tf.gradients(_y, _x, grad_ys=y)[0] / grad
+
+
+        # Extract patches following same settings of convolution
+        patches = extract_patches(players)
+        reference = extract_patches(reference)
+
+        # Reshape patches to have all elements involved in convolution together in the last dimension
+        _players = tf.reshape(patches, (-1, np.prod(ksizes)))
+        reference = tf.reshape(reference, (-1, np.prod(ksizes)))
+        # Do the same for the kernel, except that we aggregate all kernel values in the first dimension
+        weights = kernel.reshape(-1, kernel.shape[-1])
+
+        _players = _players.eval(session=SESSION)
+        reference = reference.eval(session=SESSION)
+
+        print ("Players", _players.shape)
+        print ("Reference", reference.shape)
+        print ("Kernel", weights.shape)
+        print ("Bias", bias.shape)
+
+        grad = tf.reshape(grad, (-1, kernel.shape[-1]))
+        print ("Grad", grad.shape)
+
+
+        grad_list = []
+        for idx in range(_players.shape[0]):
+            outer = np.expand_dims(_players[idx], 1) * weights
+            outer_b = np.expand_dims(reference[idx % reference.shape[0]], 1) * weights
+            eta = eta_shap(outer, bias, outer_b)
+            #print ("Eta", eta.shape)
+            grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
+
+        result = tf.stack(grad_list)
+        print ("Result,prereshape", result.shape)
+        result = extract_patches_inverse(players, result)
+        print("Result", result.shape)
+
+        #assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
+            #"Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
+        print ('Return')
+        return result, g2
 
     @classmethod
     def maxpool_grad_override(cls, op, grad):
@@ -395,38 +473,36 @@ class DeepShapley(GradientBasedMethod):
         reference = cls._deepshap_ref[op.name + "_x"]
 
         b, w, h, c = players.shape
-        #print (b, w, h, c)
         _, kw, kh, _ = op.get_attr('ksize')
         hw, hh = w // kw, h // kh
-        #print (_, kw, kh, _)
         pad = [[0, 0], [0, 0]]
         x = tf.space_to_batch_nd(players, [kw, kh], pad)
         r = tf.space_to_batch_nd(reference, [kw, kh], pad)
-        #print(patches.shape)
         x = tf.reshape(x, (kw * kh, -1))
         r = tf.reshape(r, (kw * kh, -1))
-        #print(patches.shape)
-       # patches = tf.transpose(patches, perm=[1, 0, 2])
-        #print(patches.shape)
-        # print (patches.eval(session=SESSION))
-        #patches = tf.reshape(patches, (kw * kh, -1))
-        #print(patches.shape)
-
-        grad_flat = tf.reshape(grad, (-1,))
+        grad_flat = tf.reshape(grad, (b, -1))
 
         x_np = tf.transpose(x, (1, 0)).eval(session=SESSION)
         r_np = tf.transpose(r, (1, 0)).eval(session=SESSION)
         grad_list = []
-        for idx in range(x_np.shape[0]):
-            players = np.expand_dims(x_np[idx], 1)
-            baseline = np.expand_dims(r_np[0], 1)  # Baseline always the same
-            # if (np.count_nonzero(players-baseline)) == 0:
-            #     grad_list.append(np.squeeze(players))
-            #     continue
-            eta = eta_shap_exact(players, None, baseline, f=lambda x: np.max(x, 1))
-            grad_list.append(grad_flat[idx] * np.squeeze(eta))
 
-        result = tf.stack(grad_list)
+        print ("x_rp", x_np.shape)
+        print ("r_rp", r_np.shape)
+
+        result = eta_shap(np.expand_dims(x_np, 1),
+                          baseline=np.expand_dims(np.repeat(r_np, b, 0), -1),
+                          weights=grad_flat,
+                          method='exact',
+                          fun = lambda x: np.max(x, 1))
+        # for idx in range(x_np.shape[0]):
+        #     players = np.expand_dims(x_np[idx], 1)
+        #     baseline = np.expand_dims(r_np[0], 1)  # Baseline always the same
+        #     # if (np.count_nonzero(players-baseline)) == 0:
+        #     #     grad_list.append(np.squeeze(players))
+        #     #     continue
+        #     eta = eta_shap(players, None, baseline, method='exact', fun=lambda x: np.max(x, 1))
+        #     grad_list.append(grad_flat[idx] * np.squeeze(eta))
+        #result = tf.stack(grad_list)
 
         # Original gradient of maxpool (for sanity test)
         # Uncomment the following lines to discard Shapley and use a custom implementation of max pooling
@@ -444,13 +520,13 @@ class DeepShapley(GradientBasedMethod):
 
         return result
 
-    # @classmethod
-    # def nonlinearity_grad_override(cls, op, grad):
-    #     #output = op.outputs[0]
-    #     # input = op.inputs[0]
-    #     # Identify function
-    #     return grad
-    #     #return tf.where(input > 0, grad, 0.3*grad)
+    @classmethod
+    def nonlinearity_grad_override(cls, op, grad):
+        #output = op.outputs[0]
+        # input = op.inputs[0]
+        # Identify function
+        return grad
+        #return tf.where(input > 0, grad, 0.3*grad)
 
     @classmethod
     def matmul_grad_override(cls, op, grad):
@@ -460,26 +536,35 @@ class DeepShapley(GradientBasedMethod):
         bias = cls._deepshap_for[op.name + '_b']
         reference = cls._deepshap_ref[op.name + "_x"]
 
-        # print (players.shape)
-        # print (weights.shape)
+        print ("Players", players.shape)
+        print ("Weights", weights.shape)
         # print (bias.shape)
-        # print (reference.shape)
+        print ("Reference", reference.shape)
         print ('Matmul override: ', op.name)
 
         g1, g2 = original_grad(op, grad)
+
+
         #return g1, g2
         if 'dense_3' in op.name:
             print ("\t skipping...")
             return g1, g2
 
-        grad_list = []
-        for idx in range(players.shape[0]):
-            outer = np.expand_dims(players[idx], 1) * weights
-            outer_b = np.expand_dims(reference[0], 1) * weights
-            eta = eta_shap(outer, bias, outer_b)
-            grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
+        result = eta_shap(np.expand_dims(players, -1) * np.expand_dims(weights, 0),
+                          baseline=np.expand_dims(reference[0], 1) * weights,
+                          bias=bias,
+                          weights=grad,
+                          method='approx',
+                          )
 
-        result = tf.stack(grad_list)
+        # grad_list = []
+        # for idx in range(players.shape[0]):
+        #     outer = np.expand_dims(players[idx], 1) * weights
+        #     outer_b = np.expand_dims(reference[0], 1) * weights
+        #     eta = eta_shap(outer, bias, outer_b)
+        #     grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
+        # result = tf.stack(grad_list)
+
         assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
             "Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
         print ('Return')
@@ -513,9 +598,16 @@ class DeepShapley(GradientBasedMethod):
                 elif op.type == 'BiasAdd':
                     ops.append(op.name[:-7] + "MatMul_b")
                     tensors.append(op.inputs[1])
+                    ops.append(op.name[:-7] + "convolution_b")
+                    tensors.append(op.inputs[1])
                 elif op.type == 'MaxPool':
                     ops.append(op.name + "_x")
                     tensors.append(op.inputs[0])
+                elif op.type == 'Conv2D':
+                    ops.append(op.name + "_x")
+                    tensors.append(op.inputs[0])
+                    ops.append(op.name + "_w")
+                    tensors.append(op.inputs[1])
 
         YXS = self.session_run(tensors, self.xs)
         YR = self.session_run(tensors, self.baseline)
