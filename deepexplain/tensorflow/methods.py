@@ -395,6 +395,8 @@ class DeepShapley(GradientBasedMethod):
         print ('Conv2d override: ', op.name)
         grad_shape = players.shape
 
+        b = players.shape[0]
+
         g1, g2 = original_grad(op, grad)
 
         # Convert Conv2D into MatMul operation and proceed
@@ -449,15 +451,26 @@ class DeepShapley(GradientBasedMethod):
         print ("Grad", grad.shape)
 
 
-        grad_list = []
-        for idx in range(_players.shape[0]):
-            outer = np.expand_dims(_players[idx], 1) * weights
-            outer_b = np.expand_dims(reference[idx % reference.shape[0]], 1) * weights
-            eta = eta_shap(outer, bias, outer_b)
-            #print ("Eta", eta.shape)
-            grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
+        # grad_list = []
+        # for idx in range(_players.shape[0]):
+        #     outer = np.expand_dims(_players[idx], 1) * weights
+        #     outer_b = np.expand_dims(reference[idx % reference.shape[0]], 1) * weights
+        #     eta = eta_shap(outer, bias, outer_b)
+        #     #print ("Eta", eta.shape)
+        #     grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
+        #
+        # result = tf.stack(grad_list)
 
-        result = tf.stack(grad_list)
+        eta = eta_shap(np.expand_dims(_players, -1) * weights,
+                       baseline=np.expand_dims(np.repeat(reference, b, 0), -1) * weights,
+                       bias=bias,
+                       weights=grad,
+                       method='approx',
+                       )
+
+        result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
+
+
         print ("Result,prereshape", result.shape)
         result = extract_patches_inverse(players, result)
         print("Result", result.shape)
@@ -478,18 +491,20 @@ class DeepShapley(GradientBasedMethod):
         pad = [[0, 0], [0, 0]]
         x = tf.space_to_batch_nd(players, [kw, kh], pad)
         r = tf.space_to_batch_nd(reference, [kw, kh], pad)
+        print (x.shape)
         x = tf.reshape(x, (kw * kh, -1))
         r = tf.reshape(r, (kw * kh, -1))
-        grad_flat = tf.reshape(grad, (b, -1))
+        grad_flat = tf.reshape(grad, (-1, 1)) # all in batch
 
         x_np = tf.transpose(x, (1, 0)).eval(session=SESSION)
         r_np = tf.transpose(r, (1, 0)).eval(session=SESSION)
         grad_list = []
 
+        print ("Grad", grad.shape)
         print ("x_rp", x_np.shape)
         print ("r_rp", r_np.shape)
 
-        result = eta_shap(np.expand_dims(x_np, 1),
+        result = eta_shap(np.expand_dims(x_np, -1),
                           baseline=np.expand_dims(np.repeat(r_np, b, 0), -1),
                           weights=grad_flat,
                           method='exact',
@@ -511,6 +526,7 @@ class DeepShapley(GradientBasedMethod):
         # end override
 
         print ("result", result.shape)
+        result = tf.squeeze(result, -1)
         result = tf.transpose(result, (1, 0))
         result = tf.reshape(result, (kw * kh, b, -1))
         result = tf.reshape(result, (-1, hw, hh, c))
@@ -550,12 +566,16 @@ class DeepShapley(GradientBasedMethod):
             print ("\t skipping...")
             return g1, g2
 
-        result = eta_shap(np.expand_dims(players, -1) * np.expand_dims(weights, 0),
-                          baseline=np.expand_dims(reference[0], 1) * weights,
+        eta = eta_shap(np.expand_dims(players, -1) * weights,
+                          baseline=np.expand_dims(reference[0], -1) * weights,
                           bias=bias,
                           weights=grad,
                           method='approx',
                           )
+
+        result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
+
+        #return tf.tile(tf.expand_dims(tf.reduce_sum(weights, -1), 0), [5, 1]), g2
 
         # grad_list = []
         # for idx in range(players.shape[0]):
@@ -567,7 +587,7 @@ class DeepShapley(GradientBasedMethod):
 
         assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
             "Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
-        print ('Return')
+        print ('Return', result.shape)
         return result, g2
 
     def run(self):
@@ -827,8 +847,8 @@ class DeepExplain(object):
     @staticmethod
     def get_override_map():
         map = dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
-        #map['MatMul'] = 'MatMulDeepExplainGrad'
-        #map['Conv2D'] = 'ConvolutionDeepExplainGrad'
+        map['MatMul'] = 'MatMulDeepExplainGrad'
+        map['Conv2D'] = 'ConvolutionDeepExplainGrad'
         map['MaxPool'] = 'MaxPoolDeepExplainGrad'
         print (map)
         return map
