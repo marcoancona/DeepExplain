@@ -464,11 +464,12 @@ class DeepShapley(GradientBasedMethod):
         eta = eta_shap(np.expand_dims(_players, -1) * weights,
                        baseline=np.expand_dims(np.repeat(reference, b, 0), -1) * weights,
                        bias=bias,
-                       weights=grad,
                        method='approx',
                        )
 
-        result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
+        shap_weights = tf.expand_dims(weights, 0) * eta  # b, n ,m
+        result = tf.reduce_sum(shap_weights * tf.expand_dims(grad, 1), -1)
+        #result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
 
 
         print ("Result,prereshape", result.shape)
@@ -504,11 +505,12 @@ class DeepShapley(GradientBasedMethod):
         print ("x_rp", x_np.shape)
         print ("r_rp", r_np.shape)
 
-        result = eta_shap(np.expand_dims(x_np, -1),
+        eta = eta_shap(np.expand_dims(x_np, -1),
                           baseline=np.expand_dims(np.repeat(r_np, b, 0), -1),
-                          weights=grad_flat,
                           method='exact',
                           fun = lambda x: np.max(x, 1))
+
+        result = tf.reduce_sum(eta * tf.expand_dims(grad_flat, 1), -1)
         # for idx in range(x_np.shape[0]):
         #     players = np.expand_dims(x_np[idx], 1)
         #     baseline = np.expand_dims(r_np[0], 1)  # Baseline always the same
@@ -526,7 +528,7 @@ class DeepShapley(GradientBasedMethod):
         # end override
 
         print ("result", result.shape)
-        result = tf.squeeze(result, -1)
+        #result = tf.squeeze(result, -1)
         result = tf.transpose(result, (1, 0))
         result = tf.reshape(result, (kw * kh, b, -1))
         result = tf.reshape(result, (-1, hw, hh, c))
@@ -569,11 +571,11 @@ class DeepShapley(GradientBasedMethod):
         eta = eta_shap(np.expand_dims(players, -1) * weights,
                           baseline=np.expand_dims(reference[0], -1) * weights,
                           bias=bias,
-                          weights=grad,
                           method='approx',
                           )
 
-        result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
+        shap_weights = tf.expand_dims(weights, 0) * eta # b, n ,m
+        result = tf.reduce_sum(shap_weights * tf.expand_dims(grad, 1), -1)
 
         #return tf.tile(tf.expand_dims(tf.reduce_sum(weights, -1), 0), [5, 1]), g2
 
@@ -849,7 +851,7 @@ class DeepExplain(object):
         map = dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
         map['MatMul'] = 'MatMulDeepExplainGrad'
         map['Conv2D'] = 'ConvolutionDeepExplainGrad'
-        map['MaxPool'] = 'MaxPoolDeepExplainGrad'
+        #map['MaxPool'] = 'MaxPoolDeepExplainGrad'
         print (map)
         return map
 

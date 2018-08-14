@@ -6,7 +6,7 @@ import tensorflow as tf
 from deepexplain.tensorflow.exact_shapley import compute_shapley
 
 
-def eta_shap(games, bias=None, baseline=None, weights=None, method='approx', fun='relu'):
+def eta_shap(games, bias=None, baseline=None, method='approx', fun='relu'):
     """
     Get shapley eta for a input array of shape [batch, n, m], where n is the number of players
     and m in the number of games the players take part in. In practice, n is the size of one layer
@@ -18,7 +18,6 @@ def eta_shap(games, bias=None, baseline=None, weights=None, method='approx', fun
     :param games: ndarray [batch, n, m]
     :param bias: ndarray [m]
     :param baseline: ndarray [n, m] or [batch, n, m] (default zero baseline)
-    :param weights: tf.Tensor [b, m] (default ones). For each of the instance b, weights of the m games.
     :param method: one of 'approx' (default), 'exact', 'revcancel'
     :param fun: non-linear function to target for Shapley values (default relu)
     :return eta shap: ndarray [batch, n]
@@ -33,13 +32,9 @@ def eta_shap(games, bias=None, baseline=None, weights=None, method='approx', fun
         bias = np.zeros((m,))
     else:
         assert bias.shape == (m,), bias.shape
-    if weights is None:
-        weights = tf.ones((b, m))
-    else:
-        assert len(weights.shape) == 2 and weights.shape[1] == m, weights.shape
 
-    print ('Eta shap [%s] games[%s], bias[%s], baseline[%s], weights[%s]' %
-           (method, games.shape, bias.shape, baseline.shape, weights.shape))
+    print ('Eta shap [%s] games[%s], bias[%s], baseline[%s]' %
+           (method, games.shape, bias.shape, baseline.shape))
 
     # Interpretation: we have n players taking part in b games of m rounds each.
     # For each game b, the Shapley value of each player is the sum of the m (weighted) rounds
@@ -53,8 +48,8 @@ def eta_shap(games, bias=None, baseline=None, weights=None, method='approx', fun
     else:
         baseline = np.repeat(baseline, b, -1)
 
-    print ('Reshape: games[%s], bias[%s], baseline[%s], weights[%s]' %
-           (games.shape, bias.shape, baseline.shape, weights.shape))
+    print ('Reshape: games[%s], bias[%s], baseline[%s]' %
+           (games.shape, bias.shape, baseline.shape))
 
     assert baseline.shape == games.shape, baseline.shape
 
@@ -68,10 +63,8 @@ def eta_shap(games, bias=None, baseline=None, weights=None, method='approx', fun
         raise RuntimeError('Method eta_shap called with invalid method name [%s]' % (method,))
 
     assert eta.shape == (n, b*m), eta.shape
-    # Add weights for each game
-    result = eta * tf.reshape(weights, (1, b*m))
     # Reshape back
-    result = tf.transpose(tf.reshape(result, (n, b, m)), (1, 0, 2))
+    result = tf.transpose(tf.reshape(eta, (n, b, m)), (1, 0, 2))
     assert result.shape == (b, n, m), result.shape
     return result
 
@@ -109,7 +102,7 @@ def eta_shap_approx(weights, bias, baseline):
     vars = np.sum(deltas**2, 0)[np.newaxis, ...].repeat(n, 0)- deltas**2
     _sum = np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0)- deltas
     vars = (vars - _sum / (n-1)) / (n-2 if n-2 > 0 else np.inf)
-    vars = np.maximum(0, vars) + 0.001 # TODO: check this, as the np.all(vars>0) fails sometimes without max
+    vars = np.maximum(0.1, vars) # TODO: check this, as the np.all(vars>0) fails sometimes without max
     assert vars.shape == (n, m)
     assert np.all(vars>0)
     #vars = np.sum((weights - means)**2, 0)[np.newaxis, ...].repeat(n, 0) / (n - 2) - (weights - means)**2 / (n - 2)
@@ -204,15 +197,15 @@ def eta_shap_dl(weights, bias, baseline=None):
 
     assert eta.shape == (n, m), eta.shape
     assert np.all(eta >= 0)
-    assert np.all(eta <= 1.0001)
+    assert np.all(eta <= 1.01)
     return eta
 
 
 def main():
-    b, n, m = 2, 5, 2
+    b, n, m = 10, 6, 200
     x = np.random.rand(b, n) # (batch, #input)
     w = np.random.rand(n, m) # (#input, #input2)
-    b = np.random.rand(m) - 0 # (#input2)
+    b = np.random.rand(m) + 5  # (#input2)
 
     # n = 5
     # x = np.array([-1.0] + [2/(n-1)]*(n-1))
@@ -240,6 +233,14 @@ def main():
     print (y - b)
     print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_exact), -1), -1))
 
+    print ("Shap RevCanccel")
+    eta_revcancel = eta_shap(games, bias=b, method='revcancel').eval(session=session)
+    print ("Eta shape:", eta_revcancel.shape)
+    print ('Eta revcancel:', eta_revcancel)
+    print ('Checksum: the following should be similar')
+    print (y - np.maximum(0, b))
+    print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_revcancel), -1), -1))
+
     print ("Shap Approx")
     eta_approx = eta_shap(games, bias=b, method='approx').eval(session = session)
     print ("Eta shape:", eta_approx.shape)
@@ -247,6 +248,13 @@ def main():
     print ('Checksum: the following should be similar')
     print (y - np.maximum(0, b))
     print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_approx), -1), -1))
+
+    print ("Approx error")
+    print (np.sqrt(np.mean((eta_exact-eta_approx)**2)))
+    print ("Revcancel error")
+    print (np.sqrt(np.mean((eta_exact - eta_revcancel) ** 2)))
+
+
 
 
 if __name__ == "__main__":
