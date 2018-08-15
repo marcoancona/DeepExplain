@@ -56,7 +56,12 @@ def eta_shap(games, bias=None, baseline=None, method='approx', fun='relu'):
 
     #assert baseline.shape == games.shape, baseline.shape
 
-    result = np.zeros_like(games)
+    if method is 'approx':
+        games = tf.convert_to_tensor(games)
+        bias = tf.convert_to_tensor(bias)
+        baseline = tf.convert_to_tensor(baseline)
+
+    result = []
     for idx in range(b):
         if method == 'approx':
             eta = eta_shap_approx(games[idx], bias, baseline[idx])
@@ -66,14 +71,14 @@ def eta_shap(games, bias=None, baseline=None, method='approx', fun='relu'):
             eta = eta_shap_dl(games[idx], bias, baseline)
         else:
             raise RuntimeError('Method eta_shap called with invalid method name [%s]' % (method,))
-        result[idx, ...] = eta
+        result.append(eta)
 
     # assert eta.shape == (n, b*m), eta.shape
     # Reshape back
     # result = tf.transpose(tf.reshape(eta, (n, b, m)), (1, 0, 2))
 
-    assert result.shape == (b, n, m), result.shape
-    return tf.convert_to_tensor(result)
+    #assert result.shape == (b, n, m), result.shape
+    return tf.stack(result)
 
 
 def eta_shap_approx(weights, bias, baseline):
@@ -91,54 +96,61 @@ def eta_shap_approx(weights, bias, baseline):
     #print ("Estimating shape. Input shape: ", weights.shape)
 
     # Sanity checks
-    assert len(weights.shape) == 2
-    assert len(bias) == weights.shape[-1]
+    #assert len(weights.shape) == 2
+    #assert len(bias) == weights.shape[-1]
 
-    # if type(weights) is np.ndarray:
-    #     print ("COnvert to tensor")
-    #     weights = tf.convert_to_tensor(weights)
-    # if type(bias) is np.ndarray:
-    #     bias = tf.convert_to_tensor(bias)
-    # if type(baseline) is np.ndarray:
-    #     weights = tf.convert_to_tensor(baseline)
+    n, m = weights.get_shape().as_list()
 
 
-    n, m = weights.shape
+    if type(weights) is np.ndarray:
+        #print ("Convert to tensor")
+        weights = tf.convert_to_tensor(weights)
+    if type(bias) is np.ndarray:
+        bias = tf.convert_to_tensor(bias)
+    if type(baseline) is np.ndarray:
+        baseline = tf.convert_to_tensor(baseline)
+
+
+
+    # print (weights.shape)
+    # print (bias.shape)
+    # print (baseline.shape)
 
     # Work on delta input (in other words, move value for absent player to its baseline value)
     # Will compute mean and variance on deltas, not on players
     deltas = weights - baseline
     # Compute total bias, which consists of original bias (network weight) and the input due to baseline
-    bias_total = bias + np.sum(baseline, 0)
+    bias_total = bias + tf.reduce_sum(baseline, 0)
 
-    means = (np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0) - deltas) / (n-1)
+    means = (tf.tile(tf.reduce_sum(deltas, 0, keepdims=True), [n, 1]) - deltas) / (n-1)
     #assert means.shape[0] == m
     assert means.shape == (n, m)
 
-    vars = (np.sum(deltas**2, 0)[np.newaxis, ...].repeat(n, 0) - deltas**2) / (n-1)
+    vars = (tf.tile(tf.reduce_sum(deltas**2, 0, keepdims=True), [n, 1]) - deltas**2) / (n-1)
     vars -= means**2
+
     #_sum = np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0)- deltas
     #vars = (vars - _sum / (n-1)) / (n-2 if n-2 > 0 else np.inf)
-    vars = np.maximum(0, vars) # TODO: check this, as the np.all(vars>0) fails sometimes without max
+    vars = tf.maximum(0.0, vars) # TODO: check this, as the np.all(vars>0) fails sometimes without max
     assert vars.shape == (n, m)
     #print (n, m)
     #plt.imshow(vars)
     #plt.show()
-    assert np.all(vars>=0), np.min(vars)
+    #assert np.all(var>=0), np.min(vars)
     #vars = np.sum((weights - means)**2, 0)[np.newaxis, ...].repeat(n, 0) / (n - 2) - (weights - means)**2 / (n - 2)
 
     # I[i,j] is the input to neuron j, given by bias + baseline + delta of unit i
     # The total input to neuron j can be computed by adding k*t, where t is the expected delta
     # and t is the number of additional players (on top of i)
-    I =  baseline + deltas + np.repeat(np.expand_dims(bias_total, 0), n, 0)
-    Ib = baseline + np.repeat(np.expand_dims(bias_total, 0), n, 0)
+    I =  baseline + deltas + tf.tile(tf.expand_dims(bias_total, 0), tf.stack([n, 1]))
+    Ib = baseline + tf.tile(tf.expand_dims(bias_total, 0), tf.stack([n, 1]))
 
     assert I.shape == (n, m)
     assert Ib.shape == (n, m)
 
     Xs = range(0, n, max(1, n // 20))
     steps = 2**6
-    R = np.zeros_like(I)
+    R = tf.zeros_like(I)
 
 
     def integrand(t, k):
@@ -149,13 +161,13 @@ def eta_shap_approx(weights, bias, baseline):
         """
         assert k>0
         const = 1. / ((2*3.1415926535*vars/k)**0.5)
-        const = np.expand_dims(const, -1)
+        const = tf.expand_dims(const, -1)
         assert const.shape == (n, m, 1), const.shape
-        exp = e**(-k * (t-means[..., np.newaxis])**2 / (2*vars[..., np.newaxis]))
+        exp = e**(-k * (t-tf.expand_dims(means, -1))**2 / (2*tf.expand_dims(vars, -1)))
         assert exp.shape == (n, m, steps), exp.shape
         #exp = np.expand_dims(exp, 0)
         #assert exp.shape == (n, m, steps)
-        gain = np.maximum(0, np.expand_dims(I, -1) + t*k) - np.maximum(0, np.expand_dims(Ib, -1) + t*k)
+        gain = tf.maximum(0.0, tf.expand_dims(I, -1) + t*k) - tf.maximum(0.0, tf.expand_dims(Ib, -1) + t*k)
         assert gain.shape == (n, m, steps), gain.shape
         # [n, m, 1] * [m, m, steps] * [n, m, steps]
         return const * exp * gain
@@ -164,24 +176,26 @@ def eta_shap_approx(weights, bias, baseline):
     #_v = np.mean(np.)**0.5
     for k in Xs:
         if k == 0:
-            R += (np.maximum(0, I) - np.maximum(0, Ib))
+            R += (tf.maximum(0.0, I) - tf.maximum(0.0, Ib))
             #print ('R: ', R)
         else:
             int_range = np.linspace(-2, 2, steps)
             #int_range = np.linspace(-2, 2, steps)
-            #delta = (int_range[1]-int_range[0])
+            delta = int_range[1]-int_range[0]
             s = integrand(int_range, k)
             assert s.shape == (n , m, steps)
-            integral = np.trapz(s, int_range) #np.sum(s, -1) * delta
-            gain = np.maximum(0, I + means * k) - np.maximum(0, Ib + means * k)
+            #integral = np.trapz(s, int_range) #
+            integral = tf.reduce_sum(s, -1) * delta
+            gain = tf.maximum(0.0, I + means * k) - tf.maximum(0.0, Ib + means * k)
             #print (gain.shape)
-            R += np.where(vars>0.01, integral, gain)
+            R += tf.where(vars>0.01, integral, gain)
 
     shap = R / len(Xs)
     divisor = weights - baseline
-    eta =  np.divide(shap, divisor, out=np.zeros_like(shap), where=np.abs(divisor) > 1e-8)
+    eta =  tf.where(tf.abs(divisor) > 1e-8, shap / divisor, tf.zeros_like(shap))
     #assert np.all(eta >= -1e-10), np.min(eta)
     #assert np.all(eta <= 1.1), np.max(eta)
+    print (eta)
     return eta
 
 
