@@ -389,8 +389,8 @@ class DeepShapley(GradientBasedMethod):
         reference = cls._deepshap_ref[op.name + "_x"]
         print (op)
         # print (players.shape)
-        # print (weights.shape)
-        # print (bias.shape)
+        print ("Kernel", kernel.shape)
+        print ("Bias", bias.shape)
         # print (reference.shape)
         print ('Conv2d override: ', op.name)
         grad_shape = players.shape
@@ -400,7 +400,8 @@ class DeepShapley(GradientBasedMethod):
         g1, g2 = original_grad(op, grad)
 
         # Convert Conv2D into MatMul operation and proceed
-        ksizes = (1,) + kernel.shape[:-1]
+        ksizes = (1,) + kernel.shape[0:2] + (1,)
+        print (ksizes)
         strides = op.get_attr('strides')
         padding = op.get_attr('padding')
         rates = op.get_attr('dilations')
@@ -434,8 +435,8 @@ class DeepShapley(GradientBasedMethod):
         reference = extract_patches(reference)
 
         # Reshape patches to have all elements involved in convolution together in the last dimension
-        _players = tf.reshape(patches, (-1, np.prod(ksizes)))
-        reference = tf.reshape(reference, (-1, np.prod(ksizes)))
+        _players = tf.reshape(patches, (-1, np.prod(kernel.shape[:-1])))
+        reference = tf.reshape(reference, (-1, np.prod(kernel.shape[:-1])))
         # Do the same for the kernel, except that we aggregate all kernel values in the first dimension
         weights = kernel.reshape(-1, kernel.shape[-1])
 
@@ -851,7 +852,7 @@ class DeepExplain(object):
         map = dict((a, 'DeepExplainGrad') for a in SUPPORTED_ACTIVATIONS)
         map['MatMul'] = 'MatMulDeepExplainGrad'
         map['Conv2D'] = 'ConvolutionDeepExplainGrad'
-        #map['MaxPool'] = 'MaxPoolDeepExplainGrad'
+        map['MaxPool'] = 'MaxPoolDeepExplainGrad'
         print (map)
         return map
 

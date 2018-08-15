@@ -1,6 +1,7 @@
 import scipy.integrate as integrate
 from scipy.stats import norm
 import numpy as np
+import numpy.ma as ma
 from math import e
 import tensorflow as tf
 from deepexplain.tensorflow.exact_shapley import compute_shapley
@@ -26,8 +27,10 @@ def eta_shap(games, bias=None, baseline=None, method='approx', fun='relu'):
     b, n, m = games.shape
     if baseline is None:
         baseline = np.zeros((n, m))
+    elif baseline.shape == (n, m):
+        baseline = np.repeat(np.expand_dims(baseline, 0), b, 0)
     else:
-        assert baseline.shape == (n, m) or baseline.shape == (b, n, m), baseline.shape
+        assert baseline.shape == (b, n, m), baseline.shape
     if bias is None:
         bias = np.zeros((m,))
     else:
@@ -56,9 +59,9 @@ def eta_shap(games, bias=None, baseline=None, method='approx', fun='relu'):
     result = np.zeros_like(games)
     for idx in range(b):
         if method == 'approx':
-            eta = eta_shap_approx(games[idx], bias, baseline)
+            eta = eta_shap_approx(games[idx], bias, baseline[idx])
         elif method == 'exact':
-            eta = eta_shap_exact(games[idx], bias, baseline, fun=fun)
+            eta = eta_shap_exact(games[idx], bias, baseline[idx], fun=fun)
         elif method == 'revcancel':
             eta = eta_shap_dl(games[idx], bias, baseline)
         else:
@@ -91,6 +94,15 @@ def eta_shap_approx(weights, bias, baseline):
     assert len(weights.shape) == 2
     assert len(bias) == weights.shape[-1]
 
+    # if type(weights) is np.ndarray:
+    #     print ("COnvert to tensor")
+    #     weights = tf.convert_to_tensor(weights)
+    # if type(bias) is np.ndarray:
+    #     bias = tf.convert_to_tensor(bias)
+    # if type(baseline) is np.ndarray:
+    #     weights = tf.convert_to_tensor(baseline)
+
+
     n, m = weights.shape
 
     # Work on delta input (in other words, move value for absent player to its baseline value)
@@ -107,9 +119,12 @@ def eta_shap_approx(weights, bias, baseline):
     vars -= means**2
     #_sum = np.sum(deltas, 0)[np.newaxis, ...].repeat(n, 0)- deltas
     #vars = (vars - _sum / (n-1)) / (n-2 if n-2 > 0 else np.inf)
-    #vars = np.maximum(0.01, vars) # TODO: check this, as the np.all(vars>0) fails sometimes without max
+    vars = np.maximum(0, vars) # TODO: check this, as the np.all(vars>0) fails sometimes without max
     assert vars.shape == (n, m)
-    assert np.all(vars>0), np.min(vars)
+    #print (n, m)
+    #plt.imshow(vars)
+    #plt.show()
+    assert np.all(vars>=0), np.min(vars)
     #vars = np.sum((weights - means)**2, 0)[np.newaxis, ...].repeat(n, 0) / (n - 2) - (weights - means)**2 / (n - 2)
 
     # I[i,j] is the input to neuron j, given by bias + baseline + delta of unit i
@@ -122,7 +137,7 @@ def eta_shap_approx(weights, bias, baseline):
     assert Ib.shape == (n, m)
 
     Xs = range(0, n, max(1, n // 20))
-    steps = 2**8+1
+    steps = 2**6
     R = np.zeros_like(I)
 
 
@@ -145,25 +160,28 @@ def eta_shap_approx(weights, bias, baseline):
         # [n, m, 1] * [m, m, steps] * [n, m, steps]
         return const * exp * gain
 
-    _m = np.mean(means)
-    _v = np.mean(vars)**0.5
+    #_m = np.mean(means)
+    #_v = np.mean(np.)**0.5
     for k in Xs:
         if k == 0:
             R += (np.maximum(0, I) - np.maximum(0, Ib))
             #print ('R: ', R)
         else:
-            int_range = np.linspace(_m-5*_v, _m+5*_v, steps)
+            int_range = np.linspace(-2, 2, steps)
+            #int_range = np.linspace(-2, 2, steps)
             #delta = (int_range[1]-int_range[0])
             s = integrand(int_range, k)
             assert s.shape == (n , m, steps)
             integral = np.trapz(s, int_range) #np.sum(s, -1) * delta
-            R += integral
+            gain = np.maximum(0, I + means * k) - np.maximum(0, Ib + means * k)
+            #print (gain.shape)
+            R += np.where(vars>0.01, integral, gain)
 
     shap = R / len(Xs)
     divisor = weights - baseline
     eta =  np.divide(shap, divisor, out=np.zeros_like(shap), where=np.abs(divisor) > 1e-8)
-    assert np.all(eta >= 0)
-    assert np.all(eta <= 1.01), np.max(eta)
+    #assert np.all(eta >= -1e-10), np.min(eta)
+    #assert np.all(eta <= 1.1), np.max(eta)
     return eta
 
 
@@ -216,12 +234,11 @@ def eta_shap_dl(weights, bias, baseline=None):
     return eta
 
 
-def main():
-    b, n, m = 20, 6, 200
-    x = np.random.rand(b, n) # (batch, #input)
+def runner(b=10, n=4, m=100, dbias = 0):
+    x = 2*(np.random.random((b, n)) - 0.5) # (batch, #input)
     xb = np.zeros((n,)) # (#input)
-    w = np.random.rand(n, m) # (#input, #input2)
-    b = np.random.rand(m) - 2  # (#input2)
+    w = 2*(np.random.random((n, m)) - 0.5) # (#input, #input2)
+    bias = 2*(np.random.random((m,)) - 0.5 + dbias)  # (#input2)
     #b = np.zeros_like(b)
 
     # n = 5
@@ -233,47 +250,72 @@ def main():
     # print(b.shape)
     #
     #
-    print("x: ", x)
+    #print("x: ", x)
     # print("b: ", b)
     session = tf.Session()
     games = np.expand_dims(x, -1) * w
     baseline = np.expand_dims(xb, -1) * w
-    print("Games (players): ", games)
+
+    assert games.shape == (b, n, m), games.shape
+
+    #print("Games (players): ", games)
     #print("Outer (shape): ", outer.shape)
-    y = np.maximum(0, np.sum(games, 1)+b)
-    print("y: ", y)
+    #y = np.maximum(0, np.sum(games, 1)+b)
+    #print("y: ", y)
 
-    print ("Shap Exact")
-    eta_exact = eta_shap(games, bias=b, baseline=baseline, method='exact').eval(session = session)
-    print ("Eta shape:", eta_exact.shape)
-    print ('Eta exact:', eta_exact)
-    print ('Checksum: the following should be similar')
-    print (y - b)
-    print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_exact), -1), -1))
+    #print ("Shap Exact")
+    eta_exact = eta_shap(games, bias=bias, baseline=baseline, method='exact').eval(session = session)
+    assert eta_exact.shape == games.shape, eta_exact.shape
+    #print ("Eta shape:", eta_exact.shape)
+    #print ('Eta exact:', eta_exact)
+    #print ('Checksum: the following should be similar')
+    #print (y - b)
+    #np.sum(x * np.sum((np.expand_dims(w, 0) * eta_exact), -1), -1))
 
-    print ("Shap RevCanccel")
-    eta_revcancel = eta_shap(games, bias=b, baseline=baseline, method='revcancel').eval(session=session)
-    print ("Eta shape:", eta_revcancel.shape)
-    print ('Eta revcancel:', eta_revcancel)
-    print ('Checksum: the following should be similar')
-    print (y - np.maximum(0, b))
-    print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_revcancel), -1), -1))
+    #print ("Shap RevCanccel")
+    eta_revcancel = eta_shap(games, bias=bias, baseline=baseline, method='revcancel').eval(session=session)
+    assert eta_revcancel.shape == games.shape, eta_revcancel.shape
 
-    print ("Shap Approx")
-    eta_approx = eta_shap(games, bias=b, baseline=baseline, method='approx').eval(session = session)
-    print ("Eta shape:", eta_approx.shape)
-    print ('Eta apprx:', eta_approx)
-    print ('Checksum: the following should be similar')
-    print (y - np.maximum(0, b))
-    print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_approx), -1), -1))
+    #print ("Eta shape:", eta_revcancel.shape)
+    #print ('Eta revcancel:', eta_revcancel)
+    #print ('Checksum: the following should be similar')
+    #print (y - np.maximum(0, b))
+    #print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_revcancel), -1), -1))
 
-    print ("Approx error")
-    print (np.sqrt(np.mean((eta_exact-eta_approx)**2)))
-    print ("Revcancel error")
-    print (np.sqrt(np.mean((eta_exact - eta_revcancel) ** 2)))
+    #print ("Shap Approx")
+    eta_approx = eta_shap(games, bias=bias, baseline=baseline, method='approx').eval(session = session)
+    assert eta_approx.shape == games.shape, eta_approx.shape
 
+    #print ("Eta shape:", eta_approx.shape)
+    #print ('Eta apprx:', eta_approx)
+    #print ('Checksum: the following should be similar')
+    #print (y - np.maximum(0, b))
+    #print (np.sum(x * np.sum((np.expand_dims(w, 0) * eta_approx), -1), -1))
+
+    #print ("Approx error")
+    rmse_approx = np.sqrt(np.mean((eta_exact-eta_approx)**2))
+    rmse_revcancel = np.sqrt(np.mean((eta_exact - eta_revcancel) ** 2))
+
+    return np.array([rmse_approx, rmse_revcancel])
+
+
+def test():
+    params = np.linspace(-2, 2, 10)
+    tests = 5
+    result = np.zeros((len(params), tests, 2))
+    for i, bias in enumerate(params):
+        for j in range(tests):
+            result[i,j,:] = runner(b=100, n=10, m=2, dbias=bias)
+
+    plt.plot(params, np.mean(result, 1))
+    plt.legend(['Approx', 'RevCancel'])
+    plt.show()
 
 
 
 if __name__ == "__main__":
-    main()
+    import numpy, time
+    import numpy as np
+    import matplotlib.pyplot as plt
+    numpy.random.seed(int(time.time()))
+    test()
