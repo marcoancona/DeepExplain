@@ -106,12 +106,16 @@ class AttributionMethod(object):
                 for i, xi in enumerate(self.xs):
                     if self.baseline[i].shape == self.xs[i].shape[1:]:
                         self.baseline[i] = np.expand_dims(self.baseline[i], 0)
+                    elif self.baseline[i].shape == self.xs[i].shape:
+                        pass
                     else:
                         raise RuntimeError('Baseline shape %s does not match expected shape %s'
                                            % (self.baseline[i].shape, self.xs[i].shape[1:]))
             else:
                 if self.baseline.shape == self.xs.shape[1:]:
                     self.baseline = np.expand_dims(self.baseline, 0)
+                elif self.baseline.shape == self.xs.shape:
+                    pass
                 else:
                     raise RuntimeError('Baseline shape %s does not match expected shape %s'
                                        % (self.baseline.shape, self.xs.shape[1:]))
@@ -370,6 +374,15 @@ class DeepShapley(GradientBasedMethod):
     _deepshap_ref = {}
     _deepshap_for = {}
 
+    _override_op = {}
+    # (key, value), where key is a string with the op name
+    # and value if a dictionary {
+    #  input: np.ndarray
+    #  reference: np.ndarray
+    #  weights: np.ndarray
+    #  bias: np.ndarray
+    # }
+
     def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
         super(DeepShapley, self).__init__(T, X, xs, session, keras_learning_phase)
         self.baseline = baseline
@@ -382,26 +395,21 @@ class DeepShapley(GradientBasedMethod):
 
     @classmethod
     def convolution_grad_override(cls, op, grad):
-        #We assume this matmul is followed by a BiasAdd and a Relu op
-        players = cls._deepshap_for[op.name + "_x"]
-        kernel = cls._deepshap_for[op.name + "_w"]
-        bias = cls._deepshap_for[op.name + '_b']
-        reference = cls._deepshap_ref[op.name + "_x"]
-        print (op)
-        # print (players.shape)
-        print ("Kernel", kernel.shape)
-        print ("Bias", bias.shape)
-        # print (reference.shape)
-        print ('Conv2d override: ', op.name)
-        grad_shape = players.shape
-
-        b = players.shape[0]
-
         g1, g2 = original_grad(op, grad)
+        if op.name not in cls._override_op:
+            print("%s uses original gradient" % (op.name,))
+            return g1, g2
+
+        print ('Conv2D override: ', op.name)
+
+        players = cls._override_op[op.name]['input']
+        reference = cls._override_op[op.name]['reference']
+        kernel = cls._override_op[op.name]['weights']
+        bias = cls._override_op[op.name]['bias']
 
         # Convert Conv2D into MatMul operation and proceed
+        b = players.shape[0]
         ksizes = (1,) + kernel.shape[0:2] + (1,)
-        print (ksizes)
         strides = op.get_attr('strides')
         padding = op.get_attr('padding')
         rates = op.get_attr('dilations')
@@ -452,16 +460,6 @@ class DeepShapley(GradientBasedMethod):
         print ("Grad", grad.shape)
 
 
-        # grad_list = []
-        # for idx in range(_players.shape[0]):
-        #     outer = np.expand_dims(_players[idx], 1) * weights
-        #     outer_b = np.expand_dims(reference[idx % reference.shape[0]], 1) * weights
-        #     eta = eta_shap(outer, bias, outer_b)
-        #     #print ("Eta", eta.shape)
-        #     grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
-        #
-        # result = tf.stack(grad_list)
-
         eta = eta_shap(np.expand_dims(_players, -1) * weights,
                        baseline=np.expand_dims(np.repeat(reference, b, 0), -1) * weights,
                        bias=bias,
@@ -475,17 +473,13 @@ class DeepShapley(GradientBasedMethod):
 
         print ("Result,prereshape", result.shape)
         result = extract_patches_inverse(players, result)
-        print("Result", result.shape)
-
-        #assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
-            #"Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
-        print ('Return')
         return result, g2
 
     @classmethod
     def maxpool_grad_override(cls, op, grad):
-        players = cls._deepshap_for[op.name + "_x"]
-        reference = cls._deepshap_ref[op.name + "_x"]
+
+        players = cls._override_op[op.name]['input']
+        reference = cls._override_op[op.name]['reference']
 
         b, w, h, c = players.shape
         _, kw, kh, _ = op.get_attr('ksize')
@@ -500,11 +494,6 @@ class DeepShapley(GradientBasedMethod):
 
         x_np = tf.transpose(x, (1, 0)).eval(session=SESSION)
         r_np = tf.transpose(r, (1, 0)).eval(session=SESSION)
-        grad_list = []
-
-        print ("Grad", grad.shape)
-        print ("x_rp", x_np.shape)
-        print ("r_rp", r_np.shape)
 
         eta = eta_shap(np.expand_dims(x_np, -1),
                           baseline=np.expand_dims(np.repeat(r_np, b, 0), -1),
@@ -512,62 +501,32 @@ class DeepShapley(GradientBasedMethod):
                           fun = lambda x: np.max(x, 1))
 
         result = tf.reduce_sum(eta * tf.expand_dims(grad_flat, 1), -1)
-        # for idx in range(x_np.shape[0]):
-        #     players = np.expand_dims(x_np[idx], 1)
-        #     baseline = np.expand_dims(r_np[0], 1)  # Baseline always the same
-        #     # if (np.count_nonzero(players-baseline)) == 0:
-        #     #     grad_list.append(np.squeeze(players))
-        #     #     continue
-        #     eta = eta_shap(players, None, baseline, method='exact', fun=lambda x: np.max(x, 1))
-        #     grad_list.append(grad_flat[idx] * np.squeeze(eta))
-        #result = tf.stack(grad_list)
-
-        # Original gradient of maxpool (for sanity test)
-        # Uncomment the following lines to discard Shapley and use a custom implementation of max pooling
-        # argmax_ = tf.argmax(x_np, 1)
-        # result = tf.one_hot(argmax_, kw * kh, axis=1) * tf.expand_dims(grad_flat, -1)
-        # end override
-
-        print ("result", result.shape)
-        #result = tf.squeeze(result, -1)
         result = tf.transpose(result, (1, 0))
         result = tf.reshape(result, (kw * kh, b, -1))
         result = tf.reshape(result, (-1, hw, hh, c))
         result = tf.batch_to_space_nd(result, [kw, kh], pad)
-
-        original = original_grad(op, grad)
-
         return result
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
-        #output = op.outputs[0]
-        # input = op.inputs[0]
-        # Identify function
         return grad
-        #return tf.where(input > 0, grad, 0.3*grad)
 
     @classmethod
     def matmul_grad_override(cls, op, grad):
-        #We assume this matmul is followed by a BiasAdd and a Relu op
-        players = cls._deepshap_for[op.name + "_x"]
-        weights = cls._deepshap_for[op.name + "_w"]
-        bias = cls._deepshap_for[op.name + '_b']
-        reference = cls._deepshap_ref[op.name + "_x"]
+        g1, g2 = original_grad(op, grad)
+        if op.name not in cls._override_op:
+            print ("%s uses original gradient" % (op.name,))
+            return g1, g2
 
+        players = cls._override_op[op.name]['input']
+        reference = cls._override_op[op.name]['reference']
+        weights = cls._override_op[op.name]['weights']
+        bias = cls._override_op[op.name]['bias']
+
+        print ('MatMul override: ', op.name)
         print ("Players", players.shape)
         print ("Weights", weights.shape)
-        # print (bias.shape)
         print ("Reference", reference.shape)
-        print ('Matmul override: ', op.name)
-
-        g1, g2 = original_grad(op, grad)
-
-
-        #return g1, g2
-        if 'dense_3' in op.name:
-            print ("\t skipping...")
-            return g1, g2
 
         eta = eta_shap(np.expand_dims(players, -1) * weights,
                           baseline=np.expand_dims(reference[0], -1) * weights,
@@ -576,22 +535,11 @@ class DeepShapley(GradientBasedMethod):
                           )
 
         shap_weights = tf.expand_dims(weights, 0) * eta # b, n ,m
-        result = tf.reduce_sum(shap_weights * tf.expand_dims(grad, 1), -1)
+        g1shap = tf.reduce_sum(shap_weights * tf.expand_dims(grad, 1), -1)
 
-        #return tf.tile(tf.expand_dims(tf.reduce_sum(weights, -1), 0), [5, 1]), g2
-
-        # grad_list = []
-        # for idx in range(players.shape[0]):
-        #     outer = np.expand_dims(players[idx], 1) * weights
-        #     outer_b = np.expand_dims(reference[0], 1) * weights
-        #     eta = eta_shap(outer, bias, outer_b)
-        #     grad_list.append(tf.squeeze(tf.matmul(tf.expand_dims(grad[idx], 0), weights * eta, transpose_b=True), axis=0))
-        # result = tf.stack(grad_list)
-
-        assert result.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
-            "Gradient got shape %s, while expecting %s" % (result.get_shape().as_list(), g1.get_shape().as_list())
-        print ('Return', result.shape)
-        return result, g2
+        assert g1shap.get_shape().as_list()[1:] == g1.get_shape().as_list()[1:], \
+            "Gradient got shape %s, while expecting %s" % (g1shap.get_shape().as_list(), g1.get_shape().as_list())
+        return g1shap, g2
 
     def run(self):
         # Check user baseline or set default one
@@ -606,42 +554,103 @@ class DeepShapley(GradientBasedMethod):
     def _init_references(self):
         print ('Shapley: computing references...')
         sys.stdout.flush()
-        self._deepshap_ref.clear()
-        ops = []
-        tensors = []
+        self._override_op.clear()
         g = tf.get_default_graph()
-        for op in g.get_operations():
-            if len(op.inputs) > 0 and not 'gradients' in op.name and 'model' in op.name:
-                print (op.type + ": " + op.name)
-                if op.type == 'MatMul':
-                    ops.append(op.name + "_x")
-                    tensors.append(op.inputs[0])
-                    ops.append(op.name + "_w")
-                    tensors.append(op.inputs[1])
-                elif op.type == 'BiasAdd':
-                    ops.append(op.name[:-7] + "MatMul_b")
-                    tensors.append(op.inputs[1])
-                    ops.append(op.name[:-7] + "convolution_b")
-                    tensors.append(op.inputs[1])
-                elif op.type == 'MaxPool':
-                    ops.append(op.name + "_x")
-                    tensors.append(op.inputs[0])
-                elif op.type == 'Conv2D':
-                    ops.append(op.name + "_x")
-                    tensors.append(op.inputs[0])
-                    ops.append(op.name + "_w")
-                    tensors.append(op.inputs[1])
 
-        YXS = self.session_run(tensors, self.xs)
-        YR = self.session_run(tensors, self.baseline)
-        for (r, opName) in zip(YR, ops):
-            self._deepshap_ref[opName] = r
-        for (r, opName) in zip(YXS, ops):
-            self._deepshap_for[opName] = r
-        for k in self._deepshap_ref.keys():
-            print (k, self._deepshap_ref[k].shape)
-        print('Shapley: references ready')
-        sys.stdout.flush()
+        def run_baseline(output):
+            return self.session_run([output], self.baseline)[0]
+
+        def run_input(output):
+            return self.session_run([output], self.xs)[0]
+
+        for op in g.get_operations():
+            # TODO: 'model' in op.name is not a good idea out of Keras! Maybe with SubGraphs?
+            if len(op.inputs) > 0 and not 'gradients' in op.name and 'model' in op.name:
+
+                # Handle non-linear activations
+                if op.type in SUPPORTED_ACTIVATIONS:
+                    nonlinear_op_name = op.name
+                    main_op_name = None
+                    self._override_op[nonlinear_op_name] = {
+                        'input': None,
+                        'reference': None,
+                        'weights': None,
+                        'bias': None
+                    }
+
+                    op = op.inputs[0].op
+                    while op.inputs:
+                        if op.type == 'BiasAdd':
+                            self._override_op[nonlinear_op_name]['bias'] = run_baseline(op.inputs[1])
+                        elif op.type == 'MatMul' or op.type == 'Conv2D':
+                            self._override_op[nonlinear_op_name]['input'] = run_input(op.inputs[0])
+                            self._override_op[nonlinear_op_name]['reference'] = run_baseline(op.inputs[0])
+                            self._override_op[nonlinear_op_name]['weights'] = op.inputs[1].eval(session=SESSION)
+                            main_op_name = op.name
+                            break
+                        else:
+                            raise RuntimeError('Unexpected anchestor to non-linearity: ', op.name)
+                        if len(op.inputs) == 0:
+                            break
+                        op = op.inputs[0].op
+                    self._override_op[main_op_name] = self._override_op[nonlinear_op_name]
+                    del self._override_op[nonlinear_op_name]
+
+                elif op.type == 'MaxPool':
+                    self._override_op[op.name] = {
+                        'input': run_input(op.inputs[0]),
+                        'reference': run_baseline(op.inputs[0]),
+                        'weights': None,
+                        'bias': None
+                    }
+        print ("Applying DeepShap on the following ops: ", self._override_op.keys())
+
+
+
+
+    # def _init_references(self):
+    #     print ('Shapley: computing references...')
+    #     sys.stdout.flush()
+    #     self._deepshap_ref.clear()
+    #     ops = []
+    #     tensors = []
+    #     g = tf.get_default_graph()
+    #     for op in g.get_operations():
+    #         if len(op.inputs) > 0 and not 'gradients' in op.name and 'model' in op.name:
+    #             print (op.type + ": " + op.name)
+    #
+    #             if op.type == 'MatMul':
+    #                 ops.append(op.name + "_x")
+    #                 tensors.append(op.inputs[0])
+    #                 ops.append(op.name + "_w")
+    #                 tensors.append(op.inputs[1])
+    #             elif op.type == 'BiasAdd':
+    #                 ops.append(op.name[:-7] + "MatMul_b")
+    #                 tensors.append(op.inputs[1])
+    #                 ops.append(op.name[:-7] + "convolution_b")
+    #                 tensors.append(op.inputs[1])
+    #             elif op.type == 'MaxPool':
+    #                 ops.append(op.name + "_x")
+    #                 tensors.append(op.inputs[0])
+    #             elif op.type == 'Conv2D':
+    #                 ops.append(op.name + "_x")
+    #                 tensors.append(op.inputs[0])
+    #                 ops.append(op.name + "_w")
+    #                 tensors.append(op.inputs[1])
+    #
+    #     print (self.baseline.shape)
+    #     #assert False
+    #     YXS = self.session_run(tensors, self.xs)
+    #     #YR = self.session_run(tensors, self.baseline)
+    #     YR = self.session_run(tensors, self.xs)
+    #     for (r, opName) in zip(YR, ops):
+    #         self._deepshap_ref[opName] = np.mean(r, 0, keepdims=True)
+    #     for (r, opName) in zip(YXS, ops):
+    #         self._deepshap_for[opName] = r
+    #     for k in self._deepshap_ref.keys():
+    #         print (k, self._deepshap_ref[k].shape)
+    #     print('Shapley: references ready')
+    #     sys.stdout.flush()
 
 
 """

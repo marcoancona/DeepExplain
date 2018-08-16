@@ -98,9 +98,11 @@ def compute_shapley(inputs, f, baseline=None):
         baseline = np.zeros_like(inputs)
     results = np.zeros(inputs.shape)
     n = inputs.shape[0]
+    assert inputs.shape == (n,), inputs.shape
     # Create powerset binary mask with shape (2**n, n)
     # Note: we first exclude column with index index, then we add it
     mask = vec_bin_array(np.arange(2 ** (n-1)), n-1)
+    assert mask.shape == (2**(n-1), n-1)
     # assert mask.shape == (2**(n-1), n-1), 'Mask shape does not match'
     coeff = (fact(mask.sum(1)) * fact(n - mask.sum(1) - 1)) / fact(n)
 
@@ -109,10 +111,12 @@ def compute_shapley(inputs, f, baseline=None):
         mask_wo_index = np.insert(mask, index, np.zeros(2 ** (n-1)), axis=1)
         mask_wi_index = np.insert(mask, index, np.ones(2 ** (n-1)), axis=1)
         # print(mask_wo_index.shape)
-        # assert mask_wo_index.shape == (2 ** (n - 1), n), 'Mask shape does not match'
+        assert mask_wo_index.shape == (2 ** (n - 1), n), 'Mask shape does not match'
+        assert np.max(mask_wo_index) == 1, np.max(mask_wo_index)
+        assert np.min(mask_wo_index) == 0, np.min(mask_wo_index)
 
-        run_wo_i = f(inputs * mask_wo_index + baseline * (~mask_wo_index))  # run all masks at once
-        run_wi_i = f(inputs * mask_wi_index + baseline * (~mask_wi_index))  # run all masks at once
+        run_wo_i = f(inputs * mask_wo_index + baseline * (1-mask_wo_index))  # run all masks at once
+        run_wi_i = f(inputs * mask_wi_index + baseline * (1-mask_wi_index))  # run all masks at once
         # assert len(run_wi_i.shape) == 1, 'Result shape len does not match %s' % (run_wi_i.shape,)
         #print (run_wi_i)
         r = (run_wi_i - run_wo_i) * coeff

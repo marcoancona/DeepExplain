@@ -77,3 +77,6 @@ examples/\.ipynb_checkpoints/
 examples/Test/
 
 *.npy
+
+src/
+.eggs/
