@@ -112,9 +112,12 @@ class TestDeepExplainGeneralTF(TestCase):
 
     def test_tf_available(self):
         try:
-            pkg_resources.require('tensorflow>=1.0')
+            pkg_resources.require('tensorflow>=1.0.0')
         except Exception:
-            self.fail("Tensorflow requirement not met")
+            try:
+                pkg_resources.require('tensorflow-gpu>=1.0.0')
+            except Exception:
+                self.fail("Tensorflow requirement not met")
 
     def test_simple_model(self):
         X, out = simple_model(tf.nn.relu, self.session)
@@ -356,25 +359,31 @@ class TestIntegratedGradientsMethod(TestCase):
             xi = np.array([[-10, -5], [3, 1]])
             attributions = de.explain('intgrad', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)
-            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 1)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 10)
 
     def test_int_grad_higher_precision(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model( self.session)
             xi = np.array([[-10, -5], [3, 1]])
-            print ('X')
-            print (X)
             attributions = de.explain('intgrad', out, X, xi, steps=500)
             self.assertEqual(attributions.shape, xi.shape)
-            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 2)
+            np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.5, -0.5]], 10)
 
     def test_int_grad_baseline(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
             X, out = simpler_model(self.session)
-            xi = np.array([[3, 1]])
-            attributions = de.explain('intgrad', out, X, xi, baseline=xi[0])
+            xi = np.array([[2, 0]])
+            attributions = de.explain('intgrad', out, X, xi, baseline=np.array([1, 0]))
             self.assertEqual(attributions.shape, xi.shape)
-            np.testing.assert_almost_equal(attributions, [[0.0, 0.0]], 5)
+            np.testing.assert_almost_equal(attributions, [[1.0, 0.0]], 10)
+
+    def test_int_grad_baseline_2(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simpler_model(self.session)
+            xi = np.array([[2, 0], [3, 0]])
+            attributions = de.explain('intgrad', out, X, xi, baseline=np.array([1, 0]))
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[1.0, 0.0], [2.0, 0.0]], 10)
 
     def test_multiple_inputs(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
