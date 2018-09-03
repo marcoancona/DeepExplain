@@ -8,7 +8,6 @@ matrix:
 
 install:
   # install TensorFlow (CPU version).
-  - pip install numpy --upgrade
   - pip install tensorflow --upgrade
   - pip install keras --upgrade
   - pip install -e .
