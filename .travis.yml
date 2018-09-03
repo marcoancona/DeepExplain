@@ -10,7 +10,7 @@ install:
   # install TensorFlow (CPU version).
   - pip install tensorflow --upgrade
   - pip install keras --upgrade
-  - pip install -e .
+  - pip install --no-dependencies -e .
 
 # command to run tests
 script:
