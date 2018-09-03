@@ -4,6 +4,7 @@ import numpy as np
 import numpy.ma as ma
 from math import e
 import tensorflow as tf
+import scipy
 from deepexplain.tensorflow.exact_shapley import compute_shapley, compute_shapley_legacy
 
 
@@ -255,7 +256,7 @@ def runner(b=10, n=4, m=100, dbias = 0, baselinew=1):
     #xb = x / 2.0
     w = 2*(np.random.random((n, m)) - 0.5) # (#input, #input2)
     bias = 0*(np.random.random((m,)) - 0.5 + dbias)  # (#input2)
-    bias = 5 * np.ones_like(bias)
+    bias = 0 * np.ones_like(bias)
     #b = np.zeros_like(b)
     #x -= xb
     xb = np.zeros_like(xb)
@@ -317,8 +318,20 @@ def runner(b=10, n=4, m=100, dbias = 0, baselinew=1):
 
     delta = games - baseline
     plt.figure()
+    x = delta[0].flatten()
+    y = (eta_exact[0] * delta[0]).flatten()
+
+    def f(x, a, b, c):
+        return np.log(a**10 + c*np.exp(x-b)) - np.log(a**10+1)
+
+    popt, pcov = scipy.optimize.curve_fit(f, x, y)
+    print (pcov)
     #plt.scatter(games.flatten(), eta_exact.flatten(), label='exact')
-    plt.scatter(games.flatten(), eta_approx.flatten() * delta.flatten(), label='approx')
+    plt.scatter(delta[0], eta_exact[0] * delta[0], label='exact')
+    plt.scatter(delta[0], eta_revcancel[0] * delta[0], label='rev_cancel')
+    plt.scatter(delta[0], eta_approx[0] * delta[0], label='approx')
+    plt.plot(np.sort(x), f(np.sort(x), *popt))
+
     #plt.scatter(games.flatten(), eta_revcancel.flatten(), label='revcancel')
     plt.legend(loc='upper left')
     plt.show()
@@ -350,13 +363,13 @@ def test_time():
 
 
 def test():
-    params = range(2, 8, 1)
+    params = range(5, 14, 1)
     #params = np.linspace(-2, 2, 20)
-    tests = 2
+    tests = 5
     result = np.zeros((len(params), tests, 2))
     for i, p in enumerate(params):
         for j in range(tests):
-            result[i,j,:] = runner(b=1000, n=p, m=1, dbias=0, baselinew=1)
+            result[i,j,:] = runner(b=1, n=p, m=1, dbias=0, baselinew=1)
 
     plt.plot(params, np.mean(result, 1))
     plt.legend(['Approx', 'RevCancel'])
