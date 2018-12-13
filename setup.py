@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name='deepexplain',
       version='0.1',
@@ -7,7 +7,7 @@ setup(name='deepexplain',
       author='Marco Ancona (ETH Zurich)',
       author_email='marco.ancona@inf.ethz.ch',
       license='MIT',
-      packages=['deepexplain'],
+      packages=find_packages(),
       install_requires=[
             'scipy',
             'matplotlib',
