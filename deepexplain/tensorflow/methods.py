@@ -25,7 +25,7 @@ _GRAD_OVERRIDE_CHECKFLAG = 0
 _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 0
 
 SESSION = None
-
+FEED = None
 
 # -----------------------------------------------------------------------------
 # UTILITY FUNCTIONS
@@ -89,10 +89,16 @@ class AttributionMethod(object):
                 feed_dict[k] = v
         else:
             feed_dict[self.X] = xs
-
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(coord=coord, sess=self.session)
         if self.keras_learning_phase is not None:
             feed_dict[self.keras_learning_phase] = 0
-        return self.session.run(T, feed_dict)
+        #print (feed_dict)
+        FEED = feed_dict
+        result = self.session.run(T, feed_dict)
+        coord.request_stop()
+        coord.join(threads)
+        return result
 
     def _set_check_baseline(self):
         if self.baseline is None:
@@ -143,18 +149,18 @@ class GradientBasedMethod(AttributionMethod):
 
     @classmethod
     def convolution_grad_override(cls, op, grad):
-        print ('Conv')
-        print (op)
-        print (grad)
-        print (original_grad(op, grad))
+        print ('conv: original grad')
+        #print (op)
+        #print (grad)
+        #print (original_grad(op, grad))
         return original_grad(op, grad)
 
     @classmethod
     def maxpool_grad_override(cls, op, grad):
-        print('maxpool')
-        print(op)
-        print(grad)
-        print(original_grad(op, grad))
+        print('maxpool: original gradient')
+        #print(op)
+        #print(grad)
+        #print(original_grad(op, grad))
         return original_grad(op, grad)
 
 
@@ -335,12 +341,10 @@ class DeepLIFTRescale(GradientBasedMethod):
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
                 if op.type in SUPPORTED_ACTIVATIONS:
                     ops.append(op)
-        print (ops)
-        print (self.baseline)
+
         YR = self.session_run([o.inputs[0] for o in ops], self.baseline)
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
-        print (self._deeplift_ref)
         print('DeepLIFT: references ready')
         sys.stdout.flush()
 
@@ -364,6 +368,8 @@ class Linear(GradientBasedMethod):
         return grad
 
 
+
+
 """
 DeepShapley
 """
@@ -375,6 +381,7 @@ class DeepShapley(GradientBasedMethod):
     _deepshap_for = {}
 
     _override_op = {}
+    _method = None
     # (key, value), where key is a string with the op name
     # and value if a dictionary {
     #  input: np.ndarray
@@ -400,7 +407,7 @@ class DeepShapley(GradientBasedMethod):
             print("%s uses original gradient" % (op.name,))
             return g1, g2
 
-        print ('Conv2D override: ', op.name)
+        # print ('Conv2D override: ', op.name)
 
         players = cls._override_op[op.name]['input']
         reference = cls._override_op[op.name]['reference']
@@ -425,9 +432,9 @@ class DeepShapley(GradientBasedMethod):
 
         def extract_patches_inverse(x, y):
             _x = tf.zeros_like(x)
-            print (_x)
+            #print (_x)
             _y = extract_patches(_x)
-            print (_y)
+            #print (_y)
             y = tf.check_numerics(
                 y,
                 'y contains nans',
@@ -451,19 +458,19 @@ class DeepShapley(GradientBasedMethod):
         _players = _players.eval(session=SESSION)
         reference = reference.eval(session=SESSION)
 
-        print ("Players", _players.shape)
-        print ("Reference", reference.shape)
-        print ("Kernel", weights.shape)
-        print ("Bias", bias.shape)
+        # print ("Players", _players.shape)
+        # print ("Reference", reference.shape)
+        # print ("Kernel", weights.shape)
+        # print ("Bias", bias.shape)
 
         grad = tf.reshape(grad, (-1, kernel.shape[-1]))
-        print ("Grad", grad.shape)
+        # print ("Grad", grad.shape)
 
 
         eta = eta_shap(np.expand_dims(_players, -1) * weights,
                        baseline=np.expand_dims(np.repeat(reference, b, 0), -1) * weights,
                        bias=bias,
-                       method='approx',
+                       method='approx' if cls._method is None else 'revcancel',
                        )
 
         shap_weights = tf.expand_dims(weights, 0) * eta  # b, n ,m
@@ -471,13 +478,13 @@ class DeepShapley(GradientBasedMethod):
         #result = tf.reduce_sum(tf.expand_dims(weights, 0) * eta, -1)
 
 
-        print ("Result,prereshape", result.shape)
+        # print ("Result,prereshape", result.shape)
         result = extract_patches_inverse(players, result)
         return result, g2
 
     @classmethod
     def maxpool_grad_override(cls, op, grad):
-
+        print ("Max pool override")
         players = cls._override_op[op.name]['input']
         reference = cls._override_op[op.name]['reference']
 
@@ -485,20 +492,22 @@ class DeepShapley(GradientBasedMethod):
         _, kw, kh, _ = op.get_attr('ksize')
         hw, hh = w // kw, h // kh
         pad = [[0, 0], [0, 0]]
-        x = tf.space_to_batch_nd(players, [kw, kh], pad)
-        r = tf.space_to_batch_nd(reference, [kw, kh], pad)
-        print (x.shape)
-        x = tf.reshape(x, (kw * kh, -1))
-        r = tf.reshape(r, (kw * kh, -1))
+        print ("About to run space_to_batch")
+
+        x_ = tf.space_to_batch_nd(players, [kw, kh], pad)
+        r_ = tf.space_to_batch_nd(reference, [kw, kh], pad)
+        #print (x.shape)
+        x = tf.reshape(x_, (kw * kh, -1))
+        r = tf.reshape(r_, (kw * kh, -1))
         grad_flat = tf.reshape(grad, (-1, 1)) # all in batch
-
-        x_np = tf.transpose(x, (1, 0)).eval(session=SESSION)
-        r_np = tf.transpose(r, (1, 0)).eval(session=SESSION)
-
+        x_np = tf.transpose(x, (1, 0)).eval(feed_dict=FEED, session=SESSION)
+        r_np = tf.transpose(r, (1, 0)).eval(feed_dict=FEED, session=SESSION)
+        print ("About to run eta_shap max")
         eta = eta_shap(np.expand_dims(x_np, -1),
                           baseline=np.expand_dims(np.repeat(r_np, b, 0), -1),
                           method='exact',
                           fun = lambda x: np.max(x, 1))
+        print ("Finished to run eta_shap max")
 
         result = tf.reduce_sum(eta * tf.expand_dims(grad_flat, 1), -1)
         result = tf.transpose(result, (1, 0))
@@ -514,24 +523,43 @@ class DeepShapley(GradientBasedMethod):
     @classmethod
     def matmul_grad_override(cls, op, grad):
         g1, g2 = original_grad(op, grad)
+        print (cls._method)
         if op.name not in cls._override_op:
             print ("%s uses original gradient" % (op.name,))
             return g1, g2
+
 
         players = cls._override_op[op.name]['input']
         reference = cls._override_op[op.name]['reference']
         weights = cls._override_op[op.name]['weights']
         bias = cls._override_op[op.name]['bias']
 
-        print ('MatMul override: ', op.name)
-        print ("Players", players.shape)
-        print ("Weights", weights.shape)
-        print ("Reference", reference.shape)
+        # print ('MatMul override: ', op.name)
+        # print ("Players", players.shape)
+        # print ("Weights", weights.shape)
+        # print ("Reference", reference.shape)
+        # print ("Original grad", g1.shape)
+
+        # if 'dense_1' not in op.name:
+        #     # Test: use normal deeplift here
+        #     print ("Using DeepLIFT rescale for %s" % (op.name))
+        #     input = tf.matmul(players, tf.transpose(weights)) + bias
+        #     ref_input = tf.matmul(reference, tf.transpose(weights)) + bias
+        #     output = tf.nn.relu(input)
+        #     ref_output = tf.nn.relu(ref_input)
+        #     delta_out = output - ref_output
+        #     delta_in = input - ref_input
+        #     instant_grad = tf.nn.relu(0.5 * (ref_input + input))
+        #     return tf.where(tf.abs(delta_in) > 1e-5, grad * delta_out / delta_in,
+        #                     original_grad(instant_grad.op, grad)), g2
+
+
+
 
         eta = eta_shap(np.expand_dims(players, -1) * weights,
                           baseline=np.expand_dims(reference[0], -1) * weights,
                           bias=bias,
-                          method='approx',
+                          method='approx' if cls._method is None else 'revcancel',
                           )
 
         shap_weights = tf.expand_dims(weights, 0) * eta # b, n ,m
@@ -654,6 +682,17 @@ class DeepShapley(GradientBasedMethod):
 
 
 """
+DeepLift (Reveal Cancel)
+"""
+
+
+class DeepLiftRC(DeepShapley):
+    _method = "revcancel"
+    def __init__(self, T, X, xs, session, keras_learning_phase, baseline=None):
+        super(DeepLiftRC, self).__init__(T, X, xs, session, keras_learning_phase, baseline=baseline)
+
+
+"""
 Occlusion method
 Generalization of the grey-box method presented in https://arxiv.org/pdf/1311.2901.pdf
 This method performs a systematic perturbation of contiguous hyperpatches in the input,
@@ -738,53 +777,65 @@ attribution_methods = OrderedDict({
     'intgrad': (IntegratedGradients, 3),
     'elrp': (EpsilonLRP, 4),
     'deeplift': (DeepLIFTRescale, 5),
-    'shapley': (DeepShapley, 6),
-    'linear': (Linear, 7),
-    'occlusion': (Occlusion, 8)
+    'deeplift_rc': (DeepLiftRC, 6),
+    'shapley': (DeepShapley, 7),
+    'linear': (Linear, 8),
+    'occlusion': (Occlusion, 9)
 })
 
 
+try:
+    @ops.RegisterGradient("DeepExplainGrad")
+    def deepexplain_grad(op, grad):
+        global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
+        _GRAD_OVERRIDE_CHECKFLAG = 1
+        if _ENABLED_METHOD_CLASS is not None \
+                and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+            return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
+        else:
+            return original_grad(op, grad)
+except:
+    print ('WARNING: failed to register DeepExplainGrad. ALready there?')
 
-@ops.RegisterGradient("DeepExplainGrad")
-def deepexplain_grad(op, grad):
-    global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
-    _GRAD_OVERRIDE_CHECKFLAG = 1
-    if _ENABLED_METHOD_CLASS is not None \
-            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
-        return _ENABLED_METHOD_CLASS.nonlinearity_grad_override(op, grad)
-    else:
-        return original_grad(op, grad)
+try:
+    @ops.RegisterGradient("MatMulDeepExplainGrad")
+    def matmul_deepexplain_grad(op, grad):
+        global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+        _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+        if _ENABLED_METHOD_CLASS is not None \
+                and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+            return _ENABLED_METHOD_CLASS.matmul_grad_override(op, grad)
+        else:
+            return original_grad(op, grad)
+except:
+    print ('WARNING: failed to register MatMulDeepExplainGrad. ALready there?')
 
-@ops.RegisterGradient("MatMulDeepExplainGrad")
-def matmul_deepexplain_grad(op, grad):
-    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
-    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
-    if _ENABLED_METHOD_CLASS is not None \
-            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
-        return _ENABLED_METHOD_CLASS.matmul_grad_override(op, grad)
-    else:
-        return original_grad(op, grad)
-
-@ops.RegisterGradient("ConvolutionDeepExplainGrad")
-def convolution_deepexplain_grad(op, grad):
-    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
-    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
-    if _ENABLED_METHOD_CLASS is not None \
-            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
-        return _ENABLED_METHOD_CLASS.convolution_grad_override(op, grad)
-    else:
-        return original_grad(op, grad)
+try:
+    @ops.RegisterGradient("ConvolutionDeepExplainGrad")
+    def convolution_deepexplain_grad(op, grad):
+        global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+        _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+        if _ENABLED_METHOD_CLASS is not None \
+                and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+            return _ENABLED_METHOD_CLASS.convolution_grad_override(op, grad)
+        else:
+            return original_grad(op, grad)
+except:
+    print ('WARNING: failed to register ConvolutionDeepExplainGrad. ALready there?')
 
 
-@ops.RegisterGradient("MaxPoolDeepExplainGrad")
-def maxpool_deepexplain_grad(op, grad):
-    global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
-    _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
-    if _ENABLED_METHOD_CLASS is not None \
-            and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
-        return _ENABLED_METHOD_CLASS.maxpool_grad_override(op, grad)
-    else:
-        return original_grad(op, grad)
+try:
+    @ops.RegisterGradient("MaxPoolDeepExplainGrad")
+    def maxpool_deepexplain_grad(op, grad):
+        global _ENABLED_METHOD_CLASS, _MATMUL_GRAD_OVERRIDE_CHECKFLAG
+        _MATMUL_GRAD_OVERRIDE_CHECKFLAG = 1
+        if _ENABLED_METHOD_CLASS is not None \
+                and issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod):
+            return _ENABLED_METHOD_CLASS.maxpool_grad_override(op, grad)
+        else:
+            return original_grad(op, grad)
+except:
+    print ('WARNING: failed to register MaxPoolDeepExplainGrad. ALready there?')
 
 
 class DeepExplain(object):
@@ -862,7 +913,6 @@ class DeepExplain(object):
         map['MatMul'] = 'MatMulDeepExplainGrad'
         map['Conv2D'] = 'ConvolutionDeepExplainGrad'
         map['MaxPool'] = 'MaxPoolDeepExplainGrad'
-        print (map)
         return map
 
     def _check_ops(self):
