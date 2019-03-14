@@ -2,6 +2,7 @@ from unittest import TestCase
 import pkg_resources
 import logging, warnings
 import tensorflow as tf
+from tensorflow.contrib.framework import is_tensor
 import numpy as np
 
 from deepexplain.tensorflow import DeepExplain
@@ -280,6 +281,57 @@ class TestDeepExplainGeneralTF(TestCase):
                 warnings.simplefilter("always")
                 de.explain('grad*input', Y, X, [[0, 0, 0]])
                 assert any(["DeepExplain detected you are trying" in str(wi.message) for wi in w])
+
+    def test_T_is_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', [Y], X, [[0, 0, 0]])
+                self.assertIn('T must be a Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_X_is_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, np.eye(3), [[0, 0, 0]])
+                self.assertIn('Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_all_in_X_are_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, [X, np.eye(3)], [[0, 0, 0]])
+                self.assertIn('Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_X_has_compatible_batch_dim(self):
+        X = tf.placeholder("float", [10, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, X, [[0, 0, 0]], batch_size=2)
+                self.assertIn('the first dimension of the input tensor',
+                              str(cm.exception)
+                              )
+
+    def test_T_has_compatible_batch_dim(self):
+        X, out = simpler_model(self.session)
+        xi = np.array([[-10, -5]]).repeat(50, 0)
+        Y = out * np.expand_dims(np.array(range(50)), -1)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('saliency', Y, X, xi, batch_size=10)
+                self.assertIn('the first dimension of the target tensor',
+                              str(cm.exception)
+                              )
 
 
 class TestDummyMethod(TestCase):
