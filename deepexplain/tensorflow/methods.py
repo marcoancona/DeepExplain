@@ -73,6 +73,7 @@ class AttributionMethod(object):
         # Most often T contains multiple output units. In this case, it is often necessary to select
         # a single unit to compute contributions for. This can be achieved passing 'ys' as weight for the output Tensor.
         self.Y = placeholder_from_data(ys) if ys is not None else 1.0  # Tensor that represents weights for T
+        self.T = self.T * self.Y
         self.xs = xs
         self.ys = ys
         self.session = session
@@ -163,7 +164,7 @@ class GradientBasedMethod(AttributionMethod):
     Base class for gradient-based attribution methods
     """
     def get_symbolic_attribution(self):
-        return tf.gradients(self.T * self.Y, self.X)
+        return tf.gradients(self.T, self.X)
 
     def run(self):
         symbolic_attribution = self.get_symbolic_attribution()
@@ -184,7 +185,7 @@ class PerturbationBasedMethod(AttributionMethod):
         self.base_activation = None
 
     def _run_input(self, x):
-        return self.session_run(self.T * self.Y, x, self.ys)
+        return self.session_run(self.T, x, self.ys)
 
     def _run_original(self):
         return self._run_input(self.xs)
@@ -204,7 +205,7 @@ Returns zero attributions. For testing only.
 class DummyZero(GradientBasedMethod):
 
     def get_symbolic_attribution(self,):
-        return tf.gradients(self.T * self.Y, self.X)
+        return tf.gradients(self.T, self.X)
 
     @classmethod
     def nonlinearity_grad_override(cls, op, grad):
@@ -220,7 +221,7 @@ https://arxiv.org/abs/1312.6034
 class Saliency(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
-        return [tf.abs(g) for g in tf.gradients(self.T * self.Y, self.X)]
+        return [tf.abs(g) for g in tf.gradients(self.T, self.X)]
 
 
 """
@@ -233,7 +234,7 @@ class GradientXInput(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
         return [g * x for g, x in zip(
-            tf.gradients(self.T * self.Y, self.X),
+            tf.gradients(self.T, self.X),
             self.X if self.has_multiple_inputs else [self.X])]
 
 
@@ -288,7 +289,7 @@ class EpsilonLRP(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
         return [g * x for g, x in zip(
-            tf.gradients(self.T * self.Y, self.X),
+            tf.gradients(self.T, self.X),
             self.X if self.has_multiple_inputs else [self.X])]
 
     @classmethod
@@ -315,7 +316,7 @@ class DeepLIFTRescale(GradientBasedMethod):
 
     def get_symbolic_attribution(self):
         return [g * (x - b) for g, x, b in zip(
-            tf.gradients(self.T * self.Y, self.X),
+            tf.gradients(self.T, self.X),
             self.X if self.has_multiple_inputs else [self.X],
             self.baseline if self.has_multiple_inputs else [self.baseline])]
 
@@ -473,7 +474,7 @@ class ShapleySampling(PerturbationBasedMethod):
         n_features = int(np.asscalar(np.prod([self.xs.shape[i] for i in self.sampling_dims])))
         result = np.zeros((xs_shape[0], n_features))
 
-        run_shape = list(xs_shape) # a copy
+        run_shape = list(xs_shape)  # a copy
         run_shape = np.delete(run_shape, self.sampling_dims).tolist()
         run_shape.insert(1, -1)
 
