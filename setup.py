@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='deepexplain',
-      version='0.1',
+      version='0.2',
       description='Perturbation and gradient-based methods for Deep Network interpretability',
       url='https://github.com/marcoancona/DeepExplain',
       author='Marco Ancona (ETH Zurich)',
