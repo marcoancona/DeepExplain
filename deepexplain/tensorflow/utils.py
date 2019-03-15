@@ -66,4 +66,4 @@ def slice_arrays(arrays, start=None, stop=None):
 def placeholder_from_data(numpy_array):
     if numpy_array is None:
         return None
-    return tf.placeholder(numpy_array.dtype, [None,] + numpy_array.shape[1:])
+    return tf.placeholder('float', [None,] + list(numpy_array.shape[1:]))

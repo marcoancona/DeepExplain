@@ -68,9 +68,11 @@ class AttributionMethod(object):
     Attribution method base class
     """
     def __init__(self, T, X, xs, session, ys=None, keras_learning_phase=None, batch_size=None):
-        self.T = T
-        self.X = X
-        self.Y = placeholder_from_data(ys) if ys is not None else 1.0
+        self.T = T  # target Tensor
+        self.X = X  # input Tensor
+        # Most often T contains multiple output units. In this case, it is often necessary to select
+        # a single unit to compute contributions for. This can be achieved passing 'ys' as weight for the output Tensor.
+        self.Y = placeholder_from_data(ys) if ys is not None else 1.0  # Tensor that represents weights for T
         self.xs = xs
         self.ys = ys
         self.session = session
@@ -94,7 +96,7 @@ class AttributionMethod(object):
             feed_dict[self.keras_learning_phase] = 0
         return self.session.run(T, feed_dict)
 
-    def session_run(self, T, xs):
+    def session_run(self, T, xs, ys=None):
         num_samples = len(xs)
         if self.has_multiple_inputs is True:
             num_samples = len(xs[0])
@@ -108,7 +110,7 @@ class AttributionMethod(object):
                                            'the same number of samples')
 
         if self.batch_size is None or self.batch_size <= 0 or num_samples <= self.batch_size:
-            return self.session_run_batch(T, xs)
+            return self.session_run_batch(T, xs, ys)
         else:
             outs = []
             batches = make_batches(num_samples, self.batch_size)
@@ -119,9 +121,9 @@ class AttributionMethod(object):
                 xs_batch = slice_arrays(xs, batch_start, batch_end)
                 # If the target tensor has one entry for each sample, we need to batch it as well
                 ys_batch = None
-                if self.ys is not None:
-                    ys_batch = slice_arrays(self.ys, batch_start, batch_end)
-                batch_outs = self.session_run_batch(T, xs_batch, ys=ys_batch)
+                if ys is not None:
+                    ys_batch = slice_arrays(ys, batch_start, batch_end)
+                batch_outs = self.session_run_batch(T, xs_batch, ys_batch)
                 batch_outs = to_list(batch_outs)
                 if batch_index == 0:
                     # Pre-allocate the results arrays.
@@ -165,7 +167,7 @@ class GradientBasedMethod(AttributionMethod):
 
     def run(self):
         symbolic_attribution = self.get_symbolic_attribution()
-        results = self.session_run(symbolic_attribution, self.xs)
+        results = self.session_run(symbolic_attribution, self.xs, self.ys)
         return results[0] if not self.has_multiple_inputs else results
 
     @classmethod
@@ -182,7 +184,7 @@ class PerturbationBasedMethod(AttributionMethod):
         self.base_activation = None
 
     def _run_input(self, x):
-        return self.session_run(self.T, x)
+        return self.session_run(self.T * self.Y, x, self.ys)
 
     def _run_original(self):
         return self._run_input(self.xs)
@@ -257,7 +259,7 @@ class IntegratedGradients(GradientBasedMethod):
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
             xs_mod = [b + (xs - b) * alpha for xs, b in zip(self.xs, self.baseline)] if self.has_multiple_inputs \
                 else self.baseline + (self.xs - self.baseline) * alpha
-            _attr = self.session_run(attributions, xs_mod)
+            _attr = self.session_run(attributions, xs_mod, self.ys)
             if gradient is None: gradient = _attr
             else: gradient = [g + a for g, a in zip(gradient, _attr)]
 
@@ -428,6 +430,7 @@ class Occlusion(PerturbationBasedMethod):
                           'probably because window_shape and step do not allow to cover the all input.')
         return attribution
 
+
 """
 Shapley Value sampling
 Computes approximate Shapley Values using "Polynomial calculation of the Shapley value based on sampling",
@@ -470,7 +473,7 @@ class ShapleySampling(PerturbationBasedMethod):
         n_features = int(np.asscalar(np.prod([self.xs.shape[i] for i in self.sampling_dims])))
         result = np.zeros((xs_shape[0], n_features))
 
-        run_shape = xs_shape.copy()
+        run_shape = list(xs_shape) # a copy
         run_shape = np.delete(run_shape, self.sampling_dims).tolist()
         run_shape.insert(1, -1)
 
@@ -570,7 +573,7 @@ class DeepExplain(object):
 
         if 'tensor' not in str(type(T)).lower():
             raise RuntimeError('T must be a Tensorflow Tensor object')
-        if ys and len(ys) != len(xs):
+        if ys is not None and len(ys) != len(xs):
             raise RuntimeError('When provided, the number of elements in ys must equal the number of elements in xs')
         if batch_size is not None and batch_size > 0:
             if T.shape[0].value is not None and T.shape[0].value is not batch_size:

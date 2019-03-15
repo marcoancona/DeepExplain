@@ -333,6 +333,51 @@ class TestDeepExplainGeneralTF(TestCase):
                               str(cm.exception)
                               )
 
+    def test_use_of_target_weights(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]])
+            yi1 = np.array([[1, 0]])
+            yi2 = np.array([[0, 1]])
+            yi3 = np.array([[1, 1]])
+            yi4 = np.array([[0, 0]])
+
+            a1 = de.explain('saliency', T, X, xi, ys=yi1)
+            a2 = de.explain('saliency', T, X, xi, ys=yi2)
+            a3 = de.explain('saliency', T, X, xi, ys=yi3)
+            a4 = de.explain('saliency', T, X, xi, ys=yi4)
+            np.testing.assert_almost_equal(a1+a2, a3, 10)
+            np.testing.assert_almost_equal(a4, np.array([[0.0, 0.0]]), 10)
+
+    def test_use_of_target_weights_batch(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]]).repeat(20, 0)
+            yi1 = np.array([[1, 0]]).repeat(20, 0)
+            yi2 = np.array([[0, 1]]).repeat(20, 0)
+            yi3 = np.array([[1, 1]]).repeat(20, 0)
+            yi4 = np.array([[0, 0]]).repeat(20, 0)
+
+            a1 = de.explain('saliency', T, X, xi, ys=yi1, batch_size=5)
+            a2 = de.explain('saliency', T, X, xi, ys=yi2, batch_size=5)
+            a3 = de.explain('saliency', T, X, xi, ys=yi3, batch_size=5)
+            a4 = de.explain('saliency', T, X, xi, ys=yi4, batch_size=5)
+            np.testing.assert_almost_equal(a1+a2, a3, 10)
+            np.testing.assert_almost_equal(a4, np.array([[0.0, 0.0]]).repeat(20, 0), 10)
+
+    def test_wrong_weight_len(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]]).repeat(20, 0)
+            yi1 = np.array([[1, 0]]) # < not same len as xi
+
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('saliency', T, X, xi, ys=yi1, batch_size=5)
+                self.assertIn('the number of elements in ys must equal ',
+                              str(cm.exception)
+                              )
+
+
 
 class TestDummyMethod(TestCase):
 
@@ -473,6 +518,18 @@ class TestIntegratedGradientsMethod(TestCase):
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
             np.testing.assert_almost_equal(attributions[1], [[6]], 10)
 
+    def test_intgrad_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('intgrad', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('intgrad', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('intgrad', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('intgrad', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
+
 
 class TestEpsilonLRPMethod(TestCase):
 
@@ -514,6 +571,18 @@ class TestEpsilonLRPMethod(TestCase):
             self.assertEqual(len(attributions), len(xi))
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 7)
             np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
+
+    def test_elrp_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('elrp', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('elrp', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('elrp', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('elrp', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
 
 
 
@@ -588,6 +657,18 @@ class TestDeepLIFTMethod(TestCase):
             np.testing.assert_almost_equal(attributions[0], np.repeat([[0.0, 0.0]], 50, 0), 10)
             np.testing.assert_almost_equal(attributions[1], np.repeat([[6]], 50, 0), 10)
 
+    def test_deeplift_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('deeplift', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('deeplift', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('deeplift', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('deeplift', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
+
 
 class TestOcclusionMethod(TestCase):
 
@@ -641,6 +722,18 @@ class TestOcclusionMethod(TestCase):
                 de.explain('occlusion', out, [X1, X2], xi)
             self.assertIn('not yet supported', str(cm.exception))
 
+    def test_occlusion_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('occlusion', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('occlusion', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('occlusion', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('occlusion', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 10)
+            np.testing.assert_almost_equal(b1, b2, 10)
+
 
 class TestShapleySamplingMethod(TestCase):
 
@@ -682,4 +775,20 @@ class TestShapleySamplingMethod(TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 de.explain('shapley_sampling', out, [X1, X2], xi)
             self.assertIn('not yet supported', str(cm.exception))
+
+    def test_shapley_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.identity, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            np.random.seed(10)
+            a1 = de.explain('shapley_sampling', out * np.array([[1, 0]]), X, xi, samples=10)
+            np.random.seed(10)
+            b1 = de.explain('shapley_sampling', out * np.array([[0, 1]]), X, xi, samples=10)
+            np.random.seed(10)
+            a2 = de.explain('shapley_sampling', out, X, xi, ys=np.array([[1, 0]]), samples=10)
+            np.random.seed(10)
+            b2 = de.explain('shapley_sampling', out, X, xi, ys=np.array([[0, 1]]), samples=10)
+            np.testing.assert_almost_equal(a1, a2, 3)
+            np.testing.assert_almost_equal(b1, b2, 3)
 
