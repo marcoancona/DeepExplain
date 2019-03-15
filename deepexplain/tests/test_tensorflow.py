@@ -2,6 +2,7 @@ from unittest import TestCase
 import pkg_resources
 import logging, warnings
 import tensorflow as tf
+from tensorflow.contrib.framework import is_tensor
 import numpy as np
 
 from deepexplain.tensorflow import DeepExplain
@@ -42,6 +43,26 @@ def simpler_model(session):
     return X, out
 
 
+def min_model(session):
+    """
+    Implements min(xi)
+    """
+    X = tf.placeholder("float", [None, 2])
+    out = tf.reduce_min(X,1)
+    session.run(tf.global_variables_initializer())
+    return X, out
+
+
+def min_model_2d(session):
+    """
+    Implements min(xi)
+    """
+    X = tf.placeholder("float", [None, 2, 2])
+    out = tf.reduce_min(tf.reshape(X, (-1, 4)), 1)
+    session.run(tf.global_variables_initializer())
+    return X, out
+
+
 def simple_multi_inputs_model(session):
     """
     Implements Relu (3*x1|2*x2) | is a concat op
@@ -64,8 +85,8 @@ def simple_multi_inputs_model2(session):
     """
     X1 = tf.placeholder("float", [None, 2])
     X2 = tf.placeholder("float", [None, 1])
-    w1 = tf.Variable(initial_value=[[3.0, 0.0], [0.0, 3.0]], trainable=False)
-    w2 = tf.Variable(initial_value=[[2.0], [2.0]], trainable=False)
+    w1 = tf.Variable(initial_value=[3.0], trainable=False)
+    w2 = tf.Variable(initial_value=[2.0], trainable=False)
 
     out = tf.nn.relu(tf.concat([X1*w1, X2*w2], 1))
     session.run(tf.global_variables_initializer())
@@ -261,6 +282,100 @@ class TestDeepExplainGeneralTF(TestCase):
                 de.explain('grad*input', Y, X, [[0, 0, 0]])
                 assert any(["DeepExplain detected you are trying" in str(wi.message) for wi in w])
 
+    def test_T_is_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', [Y], X, [[0, 0, 0]])
+                self.assertIn('T must be a Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_X_is_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, np.eye(3), [[0, 0, 0]])
+                self.assertIn('Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_all_in_X_are_tensor(self):
+        X = tf.placeholder("float", [None, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, [X, np.eye(3)], [[0, 0, 0]])
+                self.assertIn('Tensorflow Tensor object',
+                              str(cm.exception)
+                              )
+
+    def test_X_has_compatible_batch_dim(self):
+        X = tf.placeholder("float", [10, 3])
+        Y = tf.nn.relu(X)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('grad*input', Y, X, [[0, 0, 0]], batch_size=2)
+                self.assertIn('the first dimension of the input tensor',
+                              str(cm.exception)
+                              )
+
+    def test_T_has_compatible_batch_dim(self):
+        X, out = simpler_model(self.session)
+        xi = np.array([[-10, -5]]).repeat(50, 0)
+        Y = out * np.expand_dims(np.array(range(50)), -1)
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('saliency', Y, X, xi, batch_size=10)
+                self.assertIn('the first dimension of the target tensor',
+                              str(cm.exception)
+                              )
+
+    def test_use_of_target_weights(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]])
+            yi1 = np.array([[1, 0]])
+            yi2 = np.array([[0, 1]])
+            yi3 = np.array([[1, 1]])
+            yi4 = np.array([[0, 0]])
+
+            a1 = de.explain('saliency', T, X, xi, ys=yi1)
+            a2 = de.explain('saliency', T, X, xi, ys=yi2)
+            a3 = de.explain('saliency', T, X, xi, ys=yi3)
+            a4 = de.explain('saliency', T, X, xi, ys=yi4)
+            np.testing.assert_almost_equal(a1+a2, a3, 10)
+            np.testing.assert_almost_equal(a4, np.array([[0.0, 0.0]]), 10)
+
+    def test_use_of_target_weights_batch(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]]).repeat(20, 0)
+            yi1 = np.array([[1, 0]]).repeat(20, 0)
+            yi2 = np.array([[0, 1]]).repeat(20, 0)
+            yi3 = np.array([[1, 1]]).repeat(20, 0)
+            yi4 = np.array([[0, 0]]).repeat(20, 0)
+
+            a1 = de.explain('saliency', T, X, xi, ys=yi1, batch_size=5)
+            a2 = de.explain('saliency', T, X, xi, ys=yi2, batch_size=5)
+            a3 = de.explain('saliency', T, X, xi, ys=yi3, batch_size=5)
+            a4 = de.explain('saliency', T, X, xi, ys=yi4, batch_size=5)
+            np.testing.assert_almost_equal(a1+a2, a3, 10)
+            np.testing.assert_almost_equal(a4, np.array([[0.0, 0.0]]).repeat(20, 0), 10)
+
+    def test_wrong_weight_len(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, T = simple_model(tf.identity, self.session)
+            xi = np.array([[1, 0]]).repeat(20, 0)
+            yi1 = np.array([[1, 0]]) # < not same len as xi
+
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('saliency', T, X, xi, ys=yi1, batch_size=5)
+                self.assertIn('the number of elements in ys must equal ',
+                              str(cm.exception)
+                              )
 
 
 
@@ -401,7 +516,19 @@ class TestIntegratedGradientsMethod(TestCase):
             attributions = de.explain('intgrad', out, [X1, X2], xi)
             self.assertEqual(len(attributions), len(xi))
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
-            np.testing.assert_almost_equal(attributions[1], [[12]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[6]], 10)
+
+    def test_intgrad_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('intgrad', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('intgrad', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('intgrad', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('intgrad', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
 
 
 class TestEpsilonLRPMethod(TestCase):
@@ -445,6 +572,18 @@ class TestEpsilonLRPMethod(TestCase):
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 7)
             np.testing.assert_almost_equal(attributions[1], [[6.0, 2.0]], 7)
 
+    def test_elrp_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('elrp', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('elrp', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('elrp', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('elrp', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
+
 
 
 class TestDeepLIFTMethod(TestCase):
@@ -463,6 +602,16 @@ class TestDeepLIFTMethod(TestCase):
             attributions = de.explain('deeplift', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [2.0, -1.0]], 10)
+
+    def test_deeplift_batches(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]])
+            xi = np.repeat(xi, 25, 0)
+            self.assertEqual(xi.shape[0], 50)
+            attributions = de.explain('deeplift', out, X, xi, batch_size=32)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, np.repeat([[0.0, 0.0], [2.0, -1.0]], 25, 0), 10)
 
     def test_deeplift_baseline(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
@@ -488,7 +637,37 @@ class TestDeepLIFTMethod(TestCase):
             attributions = de.explain('deeplift', out, [X1, X2], xi)
             self.assertEqual(len(attributions), len(xi))
             np.testing.assert_almost_equal(attributions[0], [[0.0, 0.0]], 10)
-            np.testing.assert_almost_equal(attributions[1], [[12]], 10)
+            np.testing.assert_almost_equal(attributions[1], [[6]], 10)
+
+    def test_multiple_inputs_different_sizes_batches(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model2(self.session)
+            xi = [np.array([[-10, -5]]).repeat(50, 0), np.array([[3]]).repeat(50, 0)]
+            attributions = de.explain('deeplift', out, [X1, X2], xi, batch_size=32)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], np.repeat([[0.0, 0.0]], 50, 0), 10)
+            np.testing.assert_almost_equal(attributions[1], np.repeat([[6]], 50, 0), 10)
+
+    def test_multiple_inputs_different_sizes_batches_disable(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model2(self.session)
+            xi = [np.array([[-10, -5]]).repeat(50, 0), np.array([[3]]).repeat(50, 0)]
+            attributions = de.explain('deeplift', out, [X1, X2], xi, batch_size=None)
+            self.assertEqual(len(attributions), len(xi))
+            np.testing.assert_almost_equal(attributions[0], np.repeat([[0.0, 0.0]], 50, 0), 10)
+            np.testing.assert_almost_equal(attributions[1], np.repeat([[6]], 50, 0), 10)
+
+    def test_deeplift_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('deeplift', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('deeplift', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('deeplift', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('deeplift', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 1)
+            np.testing.assert_almost_equal(b1, b2, 1)
 
 
 class TestOcclusionMethod(TestCase):
@@ -507,6 +686,14 @@ class TestOcclusionMethod(TestCase):
             attributions = de.explain('occlusion', out, X, xi)
             self.assertEqual(attributions.shape, xi.shape)
             np.testing.assert_almost_equal(attributions, [[0.0, 0.0], [1.0, -1.0]], 10)
+
+    def test_occlusion_batches(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simpler_model( self.session)
+            xi = np.array([[-10, -5], [3, 1]]).repeat(10, 0)
+            attributions = de.explain('occlusion', out, X, xi, batch_size=5)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, np.repeat([[0.0, 0.0], [1.0, -1.0]], 10, 0), 10)
 
     def test_window_shape(self):
         with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
@@ -534,4 +721,74 @@ class TestOcclusionMethod(TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 de.explain('occlusion', out, [X1, X2], xi)
             self.assertIn('not yet supported', str(cm.exception))
+
+    def test_occlusion_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.nn.relu, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            a1 = de.explain('occlusion', out * np.array([[1, 0]]), X, xi)
+            b1 = de.explain('occlusion', out * np.array([[0, 1]]), X, xi)
+            a2 = de.explain('occlusion', out, X, xi, ys=np.array([[1, 0]]))
+            b2 = de.explain('occlusion', out, X, xi, ys=np.array([[0, 1]]))
+            np.testing.assert_almost_equal(a1, a2, 10)
+            np.testing.assert_almost_equal(b1, b2, 10)
+
+
+class TestShapleySamplingMethod(TestCase):
+
+    def setUp(self):
+        self.session = tf.Session()
+
+    def tearDown(self):
+        self.session.close()
+        tf.reset_default_graph()
+
+    def test_shapley_sampling(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = min_model(self.session)
+            xi = np.array([[2, -2], [4, 2]])
+            attributions = de.explain('shapley_sampling', out, X, xi, samples=300)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, [[0.0, -2.0], [1.0, 1.0]], 1)
+
+    def test_shapley_sampling_batches(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = min_model(self.session)
+            xi = np.array([[2, -2], [4, 2]]).repeat(20, 0)
+            attributions = de.explain('shapley_sampling', out, X, xi, samples=300, batch_size=5)
+            self.assertEqual(attributions.shape, xi.shape)
+            np.testing.assert_almost_equal(attributions, np.repeat([[0.0, -2.0], [1.0, 1.0]], 20, 0), 1)
+
+    def test_shapley_sampling_dims(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = min_model_2d(self.session)
+            xi = np.array([[[-1, 4], [-2, 1]]])
+            attributions = de.explain('shapley_sampling', out, X, xi, samples=300, sampling_dims=[1])
+            self.assertEqual(attributions.shape, (1, 2))
+            np.testing.assert_almost_equal(attributions, [[-.5, -1.5]], 1)
+
+    def test_multiple_inputs_error(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X1, X2, out = simple_multi_inputs_model(self.session)
+            xi = [np.array([[-10, -5]]), np.array([[3, 1]])]
+            with self.assertRaises(RuntimeError) as cm:
+                de.explain('shapley_sampling', out, [X1, X2], xi)
+            self.assertIn('not yet supported', str(cm.exception))
+
+    def test_shapley_targeting_equivalence(self):
+        with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+            X, out = simple_model(tf.identity, self.session)
+            xi = np.array([[5, 3]])
+            self.assertEqual(out.shape[1], 2)
+            np.random.seed(10)
+            a1 = de.explain('shapley_sampling', out * np.array([[1, 0]]), X, xi, samples=10)
+            np.random.seed(10)
+            b1 = de.explain('shapley_sampling', out * np.array([[0, 1]]), X, xi, samples=10)
+            np.random.seed(10)
+            a2 = de.explain('shapley_sampling', out, X, xi, ys=np.array([[1, 0]]), samples=10)
+            np.random.seed(10)
+            b2 = de.explain('shapley_sampling', out, X, xi, ys=np.array([[0, 1]]), samples=10)
+            np.testing.assert_almost_equal(a1, a2, 3)
+            np.testing.assert_almost_equal(b1, b2, 3)
 

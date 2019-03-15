@@ -2,7 +2,7 @@ DeepExplain: attribution methods for Deep Learning
 [![Build Status](https://travis-ci.org/marcoancona/DeepExplain.svg?branch=master)](https://travis-ci.org/marcoancona/DeepExplain)
 ===
 DeepExplain provides a unified framework for state-of-the-art gradient *and* perturbation-based attribution methods.
-It can be used by researchers and practitioners for better undertanding the behavior of existing models, as well for benchmarking other attribution methods.
+It can be used by researchers and practitioners for better undertanding the recommended existing models, as well for benchmarking other attribution methods.
 
 It supports **Tensorflow** as well as **Keras** with Tensorflow backend. Support for PyTorch is planned.
 
@@ -20,6 +20,7 @@ Methods marked with (*) are implemented as modified chain-rule, as better explai
 **Pertubration-based attribution methods**
 - [**Occlusion**](https://arxiv.org/abs/1311.2901), as an extension
 of the [grey-box method by Zeiler *et al*](https://arxiv.org/abs/1311.2901).
+- [**Shapley Value sampling**](https://www.sciencedirect.com/science/article/pii/S0305054808000804)
 
 ## What are attributions?
 Consider a network and a specific input to this network (eg. an image, if the network is trained for image classification). The input is multi-dimensional, made of several features. In the case of images, each pixel can be considered a feature. The goal of an attribution method is to determine a real value `R(x_i)` for each input feature, with respect to a target neuron of interest (for example, the activation of the neuron corresponsing to the correct class). 
@@ -45,13 +46,15 @@ Working examples for Tensorflow and Keras can be found in the `example` folder o
 consists of a single method: `explain(method_name, target_tensor, input_tensor, samples, ...args)`.
 
 
-Parameter name | Type | Description
----------------|------|------------
-`method_name` | string, required | Name of the method to run (see [Which method to use?](#which-method-to-use)).
-`target_tensor` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked (see [Which tensor to target?](#which-neuron-to-target)).
-`input_tensor` | Tensor, required | Symbolic input to the network.
-`samples` | numpy array, required | Batch of input samples to be fed to `input_tensor` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
-`...args` | various, optional | Method-specific parameters (see below).
+Parameter name | Short name | Type | Description
+---------------|------|------|------------
+`method_name` | | string, required | Name of the method to run (see [Which method to use?](#which-method-to-use)).
+`target_tensor` | `T` | Tensor, required | Tensorflow Tensor object representing the output of the model for which attributions are seeked (see [Which tensor to target?](#which-neuron-to-target)).
+`input_tensor` | `X` | Tensor, required | Symbolic input to the network.
+`input_data` | `xs` | numpy array, required | Batch of input samples to be fed to `X` and for which attributions are seeked. Notice that the first dimension must always be the batch size.
+`target_weights` | `ys` | numpy array, optional | Batch of weights to be applied to `T` if this has more than one output. Usually necessary on classification problems where there are multiple output units and we need to target a specific one to generate explanations for. In this case, `ys` can be provided with the one-hot encoding of the desired unit.
+`batch_size` | |int, optional| By default, DeepExplain will try to evaluate the model using all data in `xs` at the same time. If `xs` contains many samples, it might be necessary to split the processing in batches. In this case, providing a `batch_size` greater than zero will automatically split the evaluation into chunks of the given size.
+`...args` | | various, optional | Method-specific parameters (see below).
 
 The method `explain` must be called within a DeepExplain context:
 
@@ -82,7 +85,7 @@ with DeepExplain(session=...) as de:  # < enter DeepExplain context
 When initializing the context, make sure to pass the `session` parameter:
 
 ```python
-# With Tensorlow
+# With Tensorflow
 import tensorflow as tf
 # ...build model
 sess = tf.Session()
@@ -106,6 +109,8 @@ See concrete examples [here](https://github.com/marcoancona/DeepExplain/tree/mas
 ## Which method to use?
 DeepExplain supports several methods. The main partition is between *gradient-based methods* and *perturbation-based methods*. The former are faster, given that they estimate attributions with a few forward and backward iterations through the network. The latter perturb the input and measure the change in output with respect to the original input. This requires to sequentially test each feature (or group of features) and therefore takes more time, but tends to produce smoother results.
 
+Cooperative game theory suggests [**Shapley Values**](https://en.wikipedia.org/wiki/Shapley_value) as a unique way to distribute attribution to features such that some important theoretical properties are satisfied. Unfortunately, computing Shapley Values exactly is prohibitively expensive, therefore DeepExplain provides a sampling-based approximation. By changing the `samples` parameters, one can adjust the trade-off between performance and error. Notice that this method will still be significantly slower than other methods in this library.
+
 Some methods allow tunable parameters. See the table below.
 
 Method | `method_name` | Optional parameters | Notes
@@ -116,6 +121,7 @@ Integrated Gradients | `intgrad` |`steps`, `baseline` | [*Gradient*] Similar to 
 epsilon-LRP | `elrp` | `epsilon` | [*Gradient*]Computes Layer-wise Relevance Propagation. Only recommanded with ReLU or Tanh nonlinearities. Value for `epsilon` must be greater than zero (default: .0001).
 DeepLIFT (Rescale) | `deeplift` | `baseline` |  [*Gradient*] In most cases a faster approximation of Integrated Gradients. Do not apply to networks with multiplicative units (ie. LSTM or GRU). When provided, `baseline` must be a numpy array with the size of the input, without the batch dimension (default: zero).
 Occlusion | `occlusion` | `window_shape`, `step` | [*Perturbation*] Computes rolling window view of the input array and replace each window with zero values, measuring the effect of the perturbation on the target output. The optional parameters `window_shape` and `step` behave like in [skimage](http://scikit-image.org/docs/dev/api/skimage.util.html#skimage.util.view_as_windows). By default, each feature is tested independently (`window_shape=1` and `step=1`), however this might be extremely slow for large inputs (such as ImageNet images). When the input presents some local coherence (eg. images), you might prefer larger values for `window_shape`. In this case the attributions of the features in each window will be summed up. Notice that the result might vary significantly for different window sizes.
+Shapley Value sampling | `shapley_sampling` | `samples`, `sampling_dims` | [*Perturbation*] Computes approximate Shapley Values by sampling `samples` times each input feature. Notice that this method can be significantly slower than all the others as it runs the network `samples*n` times, where `n` is the number of input features in your input. The parameter `sampling_dims` (a list of integers) can be used to select which dimensions should be sampled. For example, if the inputs are RGB images, `sampling_dims=[1,2]` would sample pixels considering the three color channels atomic. Instead `sampling_dims=[1,2,3]` (default) will samples over the channels as well.
 
 ## Which neuron to target?
 In general, any tensor that represents the activation of any hidden or output neuron can be user as `target_tensor`. If your network performs a classification task (ie. one output neuron for each possible class) you might want to target the neuron corresponding to the *correct class* for a given sample, such that the attribution map might help you undertand the reasons for this neuron to (not) activate. However you can also target the activation of another class, for example a class that is often missclassified, to have insight about features that activate this class.
@@ -124,10 +130,18 @@ In general, any tensor that represents the activation of any hidden or output ne
 
 ```python
 # Example on MNIST (classification, with 10 output classes)
-# ... model is created and trained
-logits = Tensor(shape=(1, 10)) # output layer, 2-dimensional Tensor, where first dimension is the batch size
+X = Placeholder(...)  # input tensor
+T = model(X) # output layer, 2-dimensional Tensor of shape (1, 10), where first dimension is the batch size
 ys = [[0, 1, 0, 0, 0, 0, 0, 0, 0, 0]]  # numpy array of shape (1, 10) with one-hot encoding of labels
-target_tensor = logits * ys # < masked target tensor: only the second component of `logits` will be used to compute attributions
+
+# We need to target only one of the 10 output units in `T`
+# Option 1 (recommanded): use the `ys` parameter
+de.explain('method_name', T, X, xs, ys=ys)
+
+# Option 2: manually mask the target. This will not work with batch processing.
+T *=  ys # < masked target tensor: only the second component of `logits` will be used to compute attributions
+de.explain('method_name', T, X, xs)
+
 ```
 
 **Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* this normalization. 
