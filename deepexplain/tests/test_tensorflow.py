@@ -1,6 +1,6 @@
 from unittest import TestCase
 import pkg_resources
-import warnings
+import logging, warnings
 import tensorflow as tf
 import numpy as np
 
