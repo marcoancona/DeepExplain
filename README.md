@@ -146,6 +146,29 @@ de.explain('method_name', T, X, xs)
 
 **Softmax**: if the network last activation is a Softmax, it is recommanded to target the activations *before* this normalization. 
 
+### Performance: Explainer API
+If you need to run `explain()` multiple times (for example, new data to process with the same model comes in over time) it is recommanded that you use the Explainer API. This provides a way to *compile* the graph operations needed to generate the explanations and *evaluate* this graph in two different steps. 
+
+Within a DeepExplain context (`de`), call `de.get_explainer()`. This method takes the same arguments of `explain()` except `xs`, `ys` and `batch_size`. It returns an explainer object (`explainer`) which provides a `run()` method. Call `explainer.run(xs, [ys], [batch_size])` to generate the explanations. Calling `run()` multiple times will not add new operations to the computational graph.
+
+
+```python
+# Normal API: 
+
+for i in range(100):
+    # The following line will become slower and slower as new operations are added to the computational graph at each iteration
+    attributions = de.explain('saliency', T, X, xs[i], ys=ys[i], batch_size=3)
+    
+ # Use the Explainer API instead:
+ 
+ # First create an explainer
+ explainer = de.get_explainer('saliency', T, X)
+ for i in range(100):
+    # Then generate explanations for some data without slowing things down
+    attributions = explainer.run(xs[i], ys=ys[i], batch_size=3)  
+ ```
+
+
 ### NLP / Embedding lookups
 The most common cause of `ValueError("None values not supported.")` is `run()` being called with a `tensor_input` and `target_tensor` that are disconnected in the backpropagation. This is common when an embedding lookup layer is used, since the lookup operation does not propagate the gradient. To generate attributions for NLP models, the input of DeepExplain should be the result of the embedding lookup instead of the original model input. Then, attributions for each word are found by summing up along the appropriate dimension of the resulting attribution matrix.
 
