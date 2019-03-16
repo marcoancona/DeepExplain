@@ -277,7 +277,7 @@ class TestDeepExplainGeneralTF(TestCase):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 de.explain('grad*input', Y, X, [[0, 0, 0]])
-                assert any(["DeepExplain detected you are trying" in str(wi.message) for wi in w])
+                assert any(["DeepExplain detected" in str(wi.message) for wi in w])
 
     def test_T_is_tensor(self):
         X = tf.placeholder("float", [None, 3])
