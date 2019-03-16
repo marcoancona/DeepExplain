@@ -377,6 +377,17 @@ class TestDeepExplainGeneralTF(TestCase):
                               str(cm.exception)
                               )
 
+    # def test_multiple_calls_memory(self):
+    #     with DeepExplain(graph=tf.get_default_graph(), session=self.session) as de:
+    #         X, T = simple_model(tf.identity, self.session)
+    #         xi = np.array([[1, 0]]).repeat(20, 0)
+    #         for i in range(100):
+    #             de.explain('saliency', T, X, xi)
+    #             tf.reset_default_graph()
+    #             print(len([n.name for n in tf.get_default_graph().as_graph_def().node]))
+
+
+
 
 
 class TestDummyMethod(TestCase):

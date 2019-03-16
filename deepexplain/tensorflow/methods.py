@@ -67,22 +67,47 @@ class AttributionMethod(object):
     """
     Attribution method base class
     """
-    def __init__(self, T, X, xs, session, ys=None, keras_learning_phase=None, batch_size=None):
+    def __init__(self, T, X, session, keras_learning_phase=None):
         self.T = T  # target Tensor
         self.X = X  # input Tensor
         # Most often T contains multiple output units. In this case, it is often necessary to select
         # a single unit to compute contributions for. This can be achieved passing 'ys' as weight for the output Tensor.
-        self.Y = placeholder_from_data(ys) if ys is not None else 1.0  # Tensor that represents weights for T
+        self.Y = tf.placeholder(tf.float32, [None,]+T[0].get_shape().as_list())
+        # placeholder_from_data(ys) if ys is not None else 1.0  # Tensor that represents weights for T
         self.T = self.T * self.Y
-        self.xs = xs
-        self.ys = ys
+        self.symbolic_attribution = None
         self.session = session
-        self.batch_size = batch_size
         self.keras_learning_phase = keras_learning_phase
         self.has_multiple_inputs = type(self.X) is list or type(self.X) is tuple
         logging.info('Model with multiple inputs: %s' % self.has_multiple_inputs)
+        # Create symbolic explanation once during construction (affects only gradient-based methods)
+        self.explain_symbolic()
 
-    def session_run_batch(self, T, xs, ys=None):
+    def explain_symbolic(self):
+        return None
+
+    def explain(self, xs, ys=None, batch_size=None):
+        pass
+
+    def _check_input_compatibility(self, xs, ys=None, batch_size=None):
+        if ys is not None and len(ys) != len(xs):
+            raise RuntimeError('When provided, the number of elements in ys must equal the number of elements in xs')
+        if batch_size is not None and batch_size > 0:
+            if self.T.shape[0].value is not None and self.T.shape[0].value is not batch_size:
+                raise RuntimeError('When using batch evaluation, the first dimension of the target tensor '
+                                   'must be compatible with the batch size. Found %s instead' % self.T.shape[0].value)
+            if isinstance(self.X, list):
+                for x in self.X:
+                    if x.shape[0].value is not None and x.shape[0].value is not batch_size:
+                        raise RuntimeError('When using batch evaluation, the first dimension of the input tensor '
+                                           'must be compatible with the batch size. Found %s instead' % x.shape[
+                                               0].value)
+            else:
+                if self.X.shape[0].value is not None and self.X.shape[0].value is not batch_size:
+                    raise RuntimeError('When using batch evaluation, the first dimension of the input tensor '
+                                       'must be compatible with the batch size. Found %s instead' % self.X.shape[0].value)
+
+    def _session_run_batch(self, T, xs, ys=None):
         feed_dict = {}
         if self.has_multiple_inputs:
             for k, v in zip(self.X, xs):
@@ -90,31 +115,30 @@ class AttributionMethod(object):
         else:
             feed_dict[self.X] = xs
 
-        if ys is not None:
-            feed_dict[self.Y] = ys
+        feed_dict[self.Y] = ys if ys is not None else np.ones([1,] + self.T[0].get_shape().as_list())
 
         if self.keras_learning_phase is not None:
             feed_dict[self.keras_learning_phase] = 0
         return self.session.run(T, feed_dict)
 
-    def session_run(self, T, xs, ys=None):
+    def _session_run(self, T, xs, ys=None, batch_size=None):
         num_samples = len(xs)
         if self.has_multiple_inputs is True:
             num_samples = len(xs[0])
             if len(xs) != len(self.X):
                 raise RuntimeError('List of input tensors and input data have different lengths (%s and %s)'
                                    % (str(len(xs)), str(len(self.X))))
-            if self.batch_size is not None:
+            if batch_size is not None:
                 for xi in xs:
                     if len(xi) != num_samples:
                         raise RuntimeError('Evaluation in batches requires all inputs to have '
                                            'the same number of samples')
 
-        if self.batch_size is None or self.batch_size <= 0 or num_samples <= self.batch_size:
-            return self.session_run_batch(T, xs, ys)
+        if batch_size is None or batch_size <= 0 or num_samples <= batch_size:
+            return self._session_run_batch(T, xs, ys)
         else:
             outs = []
-            batches = make_batches(num_samples, self.batch_size)
+            batches = make_batches(num_samples, batch_size)
             index_array = np.arange(num_samples)
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 #batch_ids = index_array[batch_start:batch_end]
@@ -124,7 +148,7 @@ class AttributionMethod(object):
                 ys_batch = None
                 if ys is not None:
                     ys_batch = slice_arrays(ys, batch_start, batch_end)
-                batch_outs = self.session_run_batch(T, xs_batch, ys_batch)
+                batch_outs = self._session_run_batch(T, xs_batch, ys_batch)
                 batch_outs = to_list(batch_outs)
                 if batch_index == 0:
                     # Pre-allocate the results arrays.
@@ -135,28 +159,27 @@ class AttributionMethod(object):
                     outs[i][batch_start:batch_end] = batch_out
             return unpack_singleton(outs)
 
-
-    def _set_check_baseline(self):
+    def _set_check_baseline(self, xs):
         if self.baseline is None:
             if self.has_multiple_inputs:
-                self.baseline = [np.zeros((1,) + xi.shape[1:]) for xi in self.xs]
+                self.baseline = [np.zeros((1,) + xi.shape[1:]) for xi in xs]
             else:
-                self.baseline = np.zeros((1,) + self.xs.shape[1:])
+                self.baseline = np.zeros((1,) + xs.shape[1:])
 
         else:
             if self.has_multiple_inputs:
-                for i, xi in enumerate(self.xs):
-                    if self.baseline[i].shape == self.xs[i].shape[1:]:
+                for i, xi in enumerate(xs):
+                    if self.baseline[i].shape == xs[i].shape[1:]:
                         self.baseline[i] = np.expand_dims(self.baseline[i], 0)
                     else:
                         raise RuntimeError('Baseline shape %s does not match expected shape %s'
-                                           % (self.baseline[i].shape, self.xs[i].shape[1:]))
+                                           % (self.baseline[i].shape, xs[i].shape[1:]))
             else:
-                if self.baseline.shape == self.xs.shape[1:]:
+                if self.baseline.shape == xs.shape[1:]:
                     self.baseline = np.expand_dims(self.baseline, 0)
                 else:
                     raise RuntimeError('Baseline shape %s does not match expected shape %s'
-                                       % (self.baseline.shape, self.xs.shape[1:]))
+                                       % (self.baseline.shape, xs.shape[1:]))
 
 
 class GradientBasedMethod(AttributionMethod):
@@ -166,9 +189,15 @@ class GradientBasedMethod(AttributionMethod):
     def get_symbolic_attribution(self):
         return tf.gradients(self.T, self.X)
 
-    def run(self):
-        symbolic_attribution = self.get_symbolic_attribution()
-        results = self.session_run(symbolic_attribution, self.xs, self.ys)
+    def explain_symbolic(self):
+        if self.symbolic_attribution is None:
+            self.symbolic_attribution = self.get_symbolic_attribution()
+        return self.symbolic_attribution
+
+    def explain(self, xs, ys=None, batch_size=None):
+        self._check_input_compatibility(xs, ys, batch_size)
+        symbolic_attribution = self.explain_symbolic()
+        results = self._session_run(symbolic_attribution, xs, ys, batch_size)
         return results[0] if not self.has_multiple_inputs else results
 
     @classmethod
@@ -180,18 +209,16 @@ class PerturbationBasedMethod(AttributionMethod):
     """
        Base class for perturbation-based attribution methods
        """
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size):
-        super(PerturbationBasedMethod, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase):
+        super(PerturbationBasedMethod, self).__init__(T, X, session, keras_learning_phase)
         self.base_activation = None
 
-    def _run_input(self, x):
-        return self.session_run(self.T, x, self.ys)
 
-    def _run_original(self):
-        return self._run_input(self.xs)
+    # def _run_original(self, xs):
+    #     return self._run_input(xs)
 
-    def run(self):
-        raise RuntimeError('Abstract: cannot run PerturbationBasedMethod')
+    # def run(self):
+    #     raise RuntimeError('Abstract: cannot run PerturbationBasedMethod')
 
 
 # -----------------------------------------------------------------------------
@@ -246,27 +273,28 @@ https://arxiv.org/pdf/1703.01365.pdf
 
 class IntegratedGradients(GradientBasedMethod):
 
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size, steps=100, baseline=None):
-        super(IntegratedGradients, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase, steps=100, baseline=None):
+        super(IntegratedGradients, self).__init__(T, X, session, keras_learning_phase)
         self.steps = steps
         self.baseline = baseline
 
-    def run(self):
+    def explain(self, xs, ys=None, batch_size=None):
+        self._check_input_compatibility(xs, ys, batch_size)
         # Check user baseline or set default one
-        self._set_check_baseline()
+        self._set_check_baseline(xs)
 
-        attributions = self.get_symbolic_attribution()
+        attributions = self.explain_symbolic()
         gradient = None
         for alpha in list(np.linspace(1. / self.steps, 1.0, self.steps)):
-            xs_mod = [b + (xs - b) * alpha for xs, b in zip(self.xs, self.baseline)] if self.has_multiple_inputs \
-                else self.baseline + (self.xs - self.baseline) * alpha
-            _attr = self.session_run(attributions, xs_mod, self.ys)
+            xs_mod = [b + (x - b) * alpha for x, b in zip(xs, self.baseline)] if self.has_multiple_inputs \
+                else self.baseline + (xs - self.baseline) * alpha
+            _attr = self._session_run(attributions, xs_mod, ys, batch_size)
             if gradient is None: gradient = _attr
             else: gradient = [g + a for g, a in zip(gradient, _attr)]
 
         results = [g * (x - b) / self.steps for g, x, b in zip(
             gradient,
-            self.xs if self.has_multiple_inputs else [self.xs],
+            xs if self.has_multiple_inputs else [xs],
             self.baseline if self.has_multiple_inputs else [self.baseline])]
 
         return results[0] if not self.has_multiple_inputs else results
@@ -281,8 +309,8 @@ http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0130140
 class EpsilonLRP(GradientBasedMethod):
     eps = None
 
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size, epsilon=1e-4):
-        super(EpsilonLRP, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase, epsilon=1e-4):
+        super(EpsilonLRP, self).__init__(T, X, session, keras_learning_phase)
         assert epsilon > 0.0, 'LRP epsilon must be greater than zero'
         global eps
         eps = epsilon
@@ -310,8 +338,8 @@ class DeepLIFTRescale(GradientBasedMethod):
 
     _deeplift_ref = {}
 
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size, baseline=None):
-        super(DeepLIFTRescale, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase, baseline=None):
+        super(DeepLIFTRescale, self).__init__(T, X, session, keras_learning_phase)
         self.baseline = baseline
 
     def get_symbolic_attribution(self):
@@ -330,17 +358,18 @@ class DeepLIFTRescale(GradientBasedMethod):
         delta_in = input - ref_input
         instant_grad = activation(op.type)(0.5 * (ref_input + input))
         return tf.where(tf.abs(delta_in) > 1e-5, grad * delta_out / delta_in,
-                               original_grad(instant_grad.op, grad))
+                        original_grad(instant_grad.op, grad))
 
-    def run(self):
+    def explain(self, xs, ys=None, batch_size=None):
+        self._check_input_compatibility(xs, ys, batch_size)
         # Check user baseline or set default one
-        self._set_check_baseline()
+        self._set_check_baseline(xs)
 
         # Init references with a forward pass
         self._init_references()
 
         # Run the default run
-        return super(DeepLIFTRescale, self).run()
+        return super(DeepLIFTRescale, self).explain(xs, ys, batch_size)
 
     def _init_references(self):
         # print ('DeepLIFT: computing references...')
@@ -352,7 +381,7 @@ class DeepLIFTRescale(GradientBasedMethod):
             if len(op.inputs) > 0 and not op.name.startswith('gradients'):
                 if op.type in SUPPORTED_ACTIVATIONS:
                     ops.append(op)
-        YR = self.session_run([o.inputs[0] for o in ops], self.baseline)
+        YR = self._session_run(self.T, [o.inputs[0] for o in ops], self.baseline)
         for (r, op) in zip(YR, ops):
             self._deeplift_ref[op.name] = r
         # print('DeepLIFT: references ready')
@@ -377,12 +406,12 @@ If integer is given, then the step is uniform in all dimensions.
 
 class Occlusion(PerturbationBasedMethod):
 
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size, window_shape=None, step=None):
-        super(Occlusion, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase, window_shape=None, step=None):
+        super(Occlusion, self).__init__(T, X, session, keras_learning_phase)
         if self.has_multiple_inputs:
             raise RuntimeError('Multiple inputs not yet supported for perturbation methods')
 
-        input_shape = xs[0].shape
+        input_shape = X[0].get_shape().as_list()
         if window_shape is not None:
             assert len(window_shape) == len(input_shape), \
                 'window_shape must have length of input (%d)' % len(input_shape)
@@ -399,33 +428,32 @@ class Occlusion(PerturbationBasedMethod):
         self.replace_value = 0.0
         logging.info('Input shape: %s; window_shape %s; step %s' % (input_shape, self.window_shape, self.step))
 
-    def run(self):
-        self._run_original()
-
-        input_shape = self.xs.shape[1:]
-        batch_size = self.xs.shape[0]
+    def explain(self, xs, ys=None, batch_size=None):
+        self._check_input_compatibility(xs, ys, batch_size)
+        input_shape = xs.shape[1:]
+        batch_size = xs.shape[0]
         total_dim = np.asscalar(np.prod(input_shape))
 
         # Create mask
         index_matrix = np.arange(total_dim).reshape(input_shape)
         idx_patches = view_as_windows(index_matrix, self.window_shape, self.step).reshape((-1,) + self.window_shape)
-        heatmap = np.zeros_like(self.xs, dtype=np.float32).reshape((-1), total_dim)
+        heatmap = np.zeros_like(xs, dtype=np.float32).reshape((-1), total_dim)
         w = np.zeros_like(heatmap)
 
         # Compute original output
-        eval0 = self._run_original()
+        eval0 = self._session_run(xs, ys, batch_size)
 
         # Start perturbation loop
         for i, p in enumerate(idx_patches):
             mask = np.ones(input_shape).flatten()
             mask[p.flatten()] = self.replace_value
-            masked_xs = mask.reshape((1,) + input_shape) * self.xs
-            delta = eval0 - self._run_input(masked_xs)
+            masked_xs = mask.reshape((1,) + input_shape) * xs
+            delta = eval0 - self._session_run(self.T, masked_xs, ys, batch_size)
             delta_aggregated = np.sum(delta.reshape((batch_size, -1)), -1, keepdims=True)
             heatmap[:, p.flatten()] += delta_aggregated
             w[:, p.flatten()] += p.size
 
-        attribution = np.reshape(heatmap / w, self.xs.shape)
+        attribution = np.reshape(heatmap / w, xs.shape)
         if np.isnan(attribution).any():
             warnings.warn('Attributions generated by Occlusion method contain nans, '
                           'probably because window_shape and step do not allow to cover the all input.')
@@ -450,11 +478,11 @@ To sample pixels, instead, use sampling_dims=[1,2]
 
 class ShapleySampling(PerturbationBasedMethod):
 
-    def __init__(self, T, X, xs, session, ys, keras_learning_phase, batch_size, samples=5, sampling_dims=None):
-        super(ShapleySampling, self).__init__(T, X, xs, session, ys, keras_learning_phase, batch_size)
+    def __init__(self, T, X, session, keras_learning_phase, samples=5, sampling_dims=None):
+        super(ShapleySampling, self).__init__(T, X, session, keras_learning_phase)
         if self.has_multiple_inputs:
             raise RuntimeError('Multiple inputs not yet supported for perturbation methods')
-        dims = len(xs.shape)
+        dims = len(X.shape)
         if sampling_dims is not None:
             if not 0 < len(sampling_dims) <= (dims - 1):
                 raise RuntimeError('sampling_dims must be a list containing 1 to %d elements' % (dims-1))
@@ -468,10 +496,10 @@ class ShapleySampling(PerturbationBasedMethod):
         self.samples = samples
         self.sampling_dims = sampling_dims
 
-    def run(self):
-        xs_shape = list(self.xs.shape)
-        batch_size = self.xs.shape[0]
-        n_features = int(np.asscalar(np.prod([self.xs.shape[i] for i in self.sampling_dims])))
+    def explain(self, xs, ys=None, batch_size=None):
+        xs_shape = list(xs.shape)
+        batch_size = xs.shape[0]
+        n_features = int(np.asscalar(np.prod([xs.shape[i] for i in self.sampling_dims])))
         result = np.zeros((xs_shape[0], n_features))
 
         run_shape = list(xs_shape)  # a copy
@@ -484,13 +512,13 @@ class ShapleySampling(PerturbationBasedMethod):
 
         for r in range(self.samples):
             p = np.random.permutation(n_features)
-            x = self.xs.copy().reshape(run_shape)
+            x = xs.copy().reshape(run_shape)
             y = None
             for i in p:
                 if y is None:
-                    y = self._run_input(x.reshape(xs_shape))
+                    y = self._session_run(self.T, x.reshape(xs_shape), ys, batch_size)
                 x[:, i] = 0
-                y0 = self._run_input(x.reshape(xs_shape))
+                y0 = self._session_run(self.T, x.reshape(xs_shape), ys, batch_size)
                 delta = y - y0
                 delta_aggregated = np.sum(delta.reshape((batch_size, -1)), -1, keepdims=False)
                 result[:, i] += delta_aggregated
@@ -555,7 +583,7 @@ class DeepExplain(object):
         self.override_context.__exit__(type, value, traceback)
         self.context_on = False
 
-    def explain(self, method, T, X, xs, ys=None, batch_size=None, **kwargs):
+    def get_explainer(self, method, T, X, **kwargs):
         if not self.context_on:
             raise RuntimeError('Explain can be called only within a DeepExplain context.')
         global _ENABLED_METHOD_CLASS, _GRAD_OVERRIDE_CHECKFLAG
@@ -574,34 +602,17 @@ class DeepExplain(object):
 
         if 'tensor' not in str(type(T)).lower():
             raise RuntimeError('T must be a Tensorflow Tensor object')
-        if ys is not None and len(ys) != len(xs):
-            raise RuntimeError('When provided, the number of elements in ys must equal the number of elements in xs')
-        if batch_size is not None and batch_size > 0:
-            if T.shape[0].value is not None and T.shape[0].value is not batch_size:
-                raise RuntimeError('When using batch evaluation, the first dimension of the target tensor '
-                                   'must be compatible with the batch size. Found %s instead' % T.shape[0].value)
-            if isinstance(X, list):
-                for x in X:
-                    if x.shape[0].value is not None and x.shape[0].value is not batch_size:
-                        raise RuntimeError('When using batch evaluation, the first dimension of the input tensor '
-                                           'must be compatible with the batch size. Found %s instead' % x.shape[
-                                               0].value)
-            else:
-                if X.shape[0].value is not None and X.shape[0].value is not batch_size:
-                    raise RuntimeError('When using batch evaluation, the first dimension of the input tensor '
-                                       'must be compatible with the batch size. Found %s instead' % X.shape[0].value)
 
         logging.info('DeepExplain: running "%s" explanation method (%d)' % (self.method, method_flag))
         self._check_ops()
         _GRAD_OVERRIDE_CHECKFLAG = 0
 
         _ENABLED_METHOD_CLASS = method_class
-        method = _ENABLED_METHOD_CLASS(T, X, xs, self.session,
-                                       ys=ys,
+        method = _ENABLED_METHOD_CLASS(T, X,
+                                       self.session,
                                        keras_learning_phase=self.keras_phase_placeholder,
-                                       batch_size=batch_size,
                                        **kwargs)
-        result = method.run()
+
         if issubclass(_ENABLED_METHOD_CLASS, GradientBasedMethod) and _GRAD_OVERRIDE_CHECKFLAG == 0:
             warnings.warn('DeepExplain detected you are trying to use an attribution method that requires '
                           'gradient override but the original gradient was used instead. You might have forgot to '
@@ -609,7 +620,11 @@ class DeepExplain(object):
         _ENABLED_METHOD_CLASS = None
         _GRAD_OVERRIDE_CHECKFLAG = 0
         self.keras_phase_placeholder = None
-        return result
+        return method
+
+    def explain(self, method, T, X, xs, ys=None, batch_size=None, **kwargs):
+        explainer = self.get_explainer(method, T, X, **kwargs)
+        return explainer.explain(xs, ys, batch_size)
 
     @staticmethod
     def get_override_map():
