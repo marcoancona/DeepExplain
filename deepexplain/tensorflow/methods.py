@@ -102,8 +102,11 @@ class AttributionMethod(object):
         pass
 
     def _check_input_compatibility(self, xs, ys=None, batch_size=None):
-        if ys is not None and len(ys) != len(xs):
-            raise RuntimeError('When provided, the number of elements in ys must equal the number of elements in xs')
+        if ys is not None:
+            if not self.has_multiple_inputs and len(xs) != len(ys):
+                raise RuntimeError('When provided, ys must have the same batch size as xs (xs has batch size {} and ys {})'.format(len(xs), len(ys)))
+            elif self.has_multiple_inputs and np.all([len(i) != len(ys) for i in xs]):
+                raise RuntimeError('When provided, ys must have the same batch size as all elements of xs')
         if batch_size is not None and batch_size > 0:
             if self.T.shape[0].value is not None and self.T.shape[0].value is not batch_size:
                 raise RuntimeError('When using batch evaluation, the first dimension of the target tensor '
