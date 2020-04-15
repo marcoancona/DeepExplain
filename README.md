@@ -126,7 +126,7 @@ Shapley Value sampling | `shapley_sampling` | `samples`, `sampling_dims` | [*Per
 ## Which neuron to target?
 In general, any tensor that represents the activation of any hidden or output neuron can be user as `target_tensor`. If your network performs a classification task (ie. one output neuron for each possible class) you might want to target the neuron corresponding to the *correct class* for a given sample, such that the attribution map might help you undertand the reasons for this neuron to (not) activate. However you can also target the activation of another class, for example a class that is often missclassified, to have insight about features that activate this class.
 
-**Important**: Tensors in Tensorflow and Keras usually include the activations of *all* neurons of a layer. If you pass such a tensor to `explain` you will get the *average* attribution map for all neurons the Tensor refers to. If you want to target a specific neuron you need either to slice the component you are interested in or multiply it for a binary mask that only select the target neuron.
+**Important**: Tensors in Tensorflow and Keras usually include the activations of *all* neurons of a layer. If you pass such a tensor to `explain` you will get the *sum* attribution map for all neurons the Tensor refers to. If you want to target a specific neuron you need either to slice the component you are interested in or multiply it for a binary mask that only select the target neuron.
 
 ```python
 # Example on MNIST (classification, with 10 output classes)
