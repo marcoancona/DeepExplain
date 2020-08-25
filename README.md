@@ -4,7 +4,7 @@ DeepExplain: attribution methods for Deep Learning
 DeepExplain provides a unified framework for state-of-the-art gradient *and* perturbation-based attribution methods.
 It can be used by researchers and practitioners for better undertanding the recommended existing models, as well for benchmarking other attribution methods.
 
-It supports **Tensorflow** as well as **Keras** with Tensorflow backend. Only Tensorflow V1 is supported. For V2, there is an open pull-request, which works if eager execution is disabled.
+It supports **Tensorflow** as well as **Keras** with Tensorflow backend. **Only Tensorflow V1 is supported. For V2, there is an open pull-request, that works if eager execution is disabled.**
 
 Implements the following methods:
 
